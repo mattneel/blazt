@@ -35,25 +35,30 @@ A from-first-principles linear algebra library for Zig, designed to be the faste
 
 ### 1.1 Target Introspection at Comptime
 
-Zig exposes the full target CPU at compile time via `@import("builtin")`:
+Zig exposes the target CPU feature flags at compile time via `@import("builtin")`:
 
 ```zig
 const builtin = @import("builtin");
 const cpu = builtin.cpu;
 
 // Feature detection
-const has_avx512f = cpu.features.isEnabled(.avx512f);
-const has_avx2 = cpu.features.isEnabled(.avx2);
-const has_fma = cpu.features.isEnabled(.fma);
-const has_neon = cpu.features.isEnabled(.neon);
-const has_sve = cpu.features.isEnabled(.sve);
+const has_avx512f = cpu.has(.x86, .avx512f);
+const has_avx2 = cpu.has(.x86, .avx2);
+const has_fma = cpu.has(.x86, .fma);
+const has_neon = cpu.has(.arm, .neon) or cpu.has(.aarch64, .neon);
+const has_sve = cpu.has(.aarch64, .sve);
 
-// Cache hierarchy (when available)
-const cache = cpu.cache;
-const l1d_size = cache.l1d.size orelse 32 * 1024;
-const l1d_line = cache.l1d.line_size orelse 64;
-const l2_size = cache.l2.size orelse 256 * 1024;
-const l3_size = cache.l3.size orelse 8 * 1024 * 1024;
+// Cache hierarchy
+//
+// Zig 0.16's `builtin.cpu` does not expose cache sizes. `blazt` provides a
+// build-time generated `cpu_cache` module (native probe) with conservative
+// defaults when probing is unavailable.
+const blazt = @import("blazt");
+const info = blazt.CpuInfo.native();
+const l1d_size = info.l1d_size_bytes;
+const l1d_line = info.l1d_line_bytes;
+const l2_size = info.l2_size_bytes;
+const l3_size = info.l3_size_bytes;
 ```
 
 **Usage:** All tiling factors, unroll depths, and SIMD widths are computed at comptime from these values. No runtime branches.

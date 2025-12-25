@@ -16,7 +16,7 @@ For the full from-first-principles specification and background, see [`README.md
 
 ## Goals (what we optimize for)
 
-1. **Comptime specialization** (no runtime dispatch): SIMD width, tile sizes, and kernel variants selected at compile time from `@import("builtin").cpu`.
+1. **Comptime specialization** (no runtime dispatch): SIMD width + feature flags come from `@import("builtin").cpu`, and cache sizes come from a build-time generated `cpu_cache` module (see `src/cpu.zig` / `build.zig`).
 2. **Zero-cost abstractions**: generic code should compile to hand-written kernels.
 3. **Allocator-aware**: all heap allocation is explicit; no hidden allocations in hot paths.
 4. **Composable kernels**: fast path built from inlined micro-kernels + packing.

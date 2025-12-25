@@ -43,15 +43,22 @@ const buf = try allocator.alignedAlloc(u8, null, n);
   - `defer` blocks can’t propagate errors. Use `catch` + `@panic`/`unreachable`, or restructure so the fallible check happens before returning.
   - For tests, prefer `std.testing.allocator` (leak checking is handled by the test runner in Debug mode in this repo).
 
-## `builtin.cpu.cache` no longer exists (Zig 0.16): use defaults + `std.atomic.cache_line`
+## No `builtin.cpu.cache` in Zig 0.16: use build-time `cpu_cache` (or defaults) + `std.atomic.cache_line`
 
 - **Symptom**
   - `error: no field named 'cache' in struct 'Target.Cpu'` when accessing `@import("builtin").cpu.cache`
 - **Source**
   - `std/Target.zig` defines `pub const Cpu = struct { arch, model, features }` — **no cache hierarchy fields**
 - **Fix / pattern**
-  - Use conservative defaults for L1/L2/L3 sizes in your own code.
+  - In `blazt`, cache sizes come from a build-time generated module imported as `@import("cpu_cache")`:
+    - native targets: probe via `tools/cpu_probe.zig` (x86 CPUID) during `zig build`
+    - otherwise: fall back to `src/cpu_cache_default.zig` (conservative defaults)
+  - Prefer the wrapper `CpuInfo.native()` (see `src/cpu.zig`) so callers get both feature flags and cache sizes.
   - For cache-line size, use `std.atomic.cache_line` (the stdlib’s canonical cache-line constant).
+
+To inspect what the build detected on your machine:
+
+- `zig build cpu-cache` then open `zig-out/cpu_cache.zig`
 
 ## CPU feature detection uses `std.Target.Cpu.has(...)` (arch-family aware)
 
