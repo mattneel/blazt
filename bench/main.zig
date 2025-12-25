@@ -77,6 +77,48 @@ fn gemmParallelOps(
     std.mem.doNotOptimizeAway(c.data[0]);
 }
 
+fn gemmOpsColMajor(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .col_major),
+    b: blazt.Matrix(f32, .col_major),
+    c: *blazt.Matrix(f32, .col_major),
+) void {
+    _ = .{ m, n, k };
+    blazt.ops.gemm(f32, .col_major, .no_trans, .no_trans, 1.0, a, b, 0.0, c);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
+fn oracleSgemmOps(
+    oracle: *const blazt.oracle.Oracle,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .col_major),
+    b: blazt.Matrix(f32, .col_major),
+    c: *blazt.Matrix(f32, .col_major),
+) void {
+    _ = .{ m, n, k };
+    oracle.sgemm(
+        .col_major,
+        .no_trans,
+        .no_trans,
+        @intCast(c.rows),
+        @intCast(c.cols),
+        @intCast(a.cols),
+        1.0,
+        a.data.ptr,
+        @intCast(a.stride),
+        b.data.ptr,
+        @intCast(b.stride),
+        0.0,
+        c.data.ptr,
+        @intCast(c.stride),
+    );
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
 fn trmvOps(n: usize, a: blazt.Matrix(f32, .row_major), x: []f32) void {
     blazt.ops.trmv(f32, .row_major, .upper, .no_trans, .unit, n, a, x);
     std.mem.doNotOptimizeAway(x[0]);
@@ -765,6 +807,149 @@ pub fn main() !void {
                 pg_p50, blazt.bench.gflops(gemm_flops, pg_p50),
                 pg_p90, blazt.bench.gflops(gemm_flops, pg_p90),
                 pg_p99, blazt.bench.gflops(gemm_flops, pg_p99),
+            },
+        );
+        try out_gemm.flush();
+    }
+
+    // %peak reporting:
+    // - set `BLAZT_PEAK_GFLOPS` to your CPU's theoretical peak GFLOP/s
+    // - %peak = (measured_gflops / peak_gflops) * 100
+    const peak_gflops: ?f64 = blk: {
+        const s = std.process.getEnvVarOwned(alloc, "BLAZT_PEAK_GFLOPS") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => break :blk null,
+            else => return err,
+        };
+        defer alloc.free(s);
+        break :blk std.fmt.parseFloat(f64, s) catch null;
+    };
+
+    // Oracle comparison (col_major) when available.
+    const do_oracle_bench: bool = blk: {
+        const s = std.process.getEnvVarOwned(alloc, "BLAZT_BENCH_ORACLE") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => break :blk false,
+            else => return err,
+        };
+        defer alloc.free(s);
+        // Anything other than "0" enables it (e.g. "1", "true").
+        break :blk s.len != 0 and !std.mem.eql(u8, s, "0");
+    };
+
+    var oracle_opt: ?blazt.oracle.Oracle = null;
+    if (do_oracle_bench) {
+        oracle_opt = blazt.oracle.Oracle.loadAny(alloc) catch |err| switch (err) {
+            error.LibraryNotFound => null,
+            else => return err,
+        };
+    }
+    defer if (oracle_opt) |*o| o.unload();
+
+    var a_cm = try blazt.Matrix(f32, .col_major).init(alloc, m_gemm, k_gemm);
+    defer a_cm.deinit();
+    var b_cm = try blazt.Matrix(f32, .col_major).init(alloc, k_gemm, n_gemm);
+    defer b_cm.deinit();
+    var c_cm = try blazt.Matrix(f32, .col_major).init(alloc, m_gemm, n_gemm);
+    defer c_cm.deinit();
+
+    for (a_cm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast(i % 1024)))) * @as(f32, 0.001);
+    for (b_cm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+    var res_gemm_cm = try blazt.bench.run(alloc, "ops.gemm(f32,col_major)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, gemmOpsColMajor, .{ m_gemm, n_gemm, k_gemm, a_cm, b_cm, &c_cm });
+    defer res_gemm_cm.deinit();
+    res_gemm_cm.sortInPlace();
+    const cm_p50 = blazt.bench.medianSortedNs(res_gemm_cm.samples_ns);
+    const cm_p90 = blazt.bench.percentileSortedNs(res_gemm_cm.samples_ns, 0.90);
+    const cm_p99 = blazt.bench.percentileSortedNs(res_gemm_cm.samples_ns, 0.99);
+
+    if (peak_gflops) |peak| {
+        const p50_g = blazt.bench.gflops(gemm_flops, cm_p50);
+        const pct = (p50_g / peak) * 100.0;
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s, {d:.1}% peak)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_gemm_cm.name,
+                cm_p50, p50_g, pct,
+                cm_p90, blazt.bench.gflops(gemm_flops, cm_p90),
+                cm_p99, blazt.bench.gflops(gemm_flops, cm_p99),
+            },
+        );
+    } else {
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_gemm_cm.name,
+                cm_p50, blazt.bench.gflops(gemm_flops, cm_p50),
+                cm_p90, blazt.bench.gflops(gemm_flops, cm_p90),
+                cm_p99, blazt.bench.gflops(gemm_flops, cm_p99),
+            },
+        );
+    }
+    try out_gemm.flush();
+
+    if (oracle_opt) |*o| {
+        // Use a smaller size for oracle comparison to avoid relying on the oracle's
+        // internal threading/dispatch behavior at very large sizes.
+        const m_or: usize = 256;
+        const n_or: usize = 256;
+        const k_or: usize = 256;
+        const flops_or: u64 = @intCast(@as(u64, 2) * @as(u64, m_or) * @as(u64, n_or) * @as(u64, k_or));
+
+        var a_or = try blazt.Matrix(f32, .col_major).init(alloc, m_or, k_or);
+        defer a_or.deinit();
+        var b_or = try blazt.Matrix(f32, .col_major).init(alloc, k_or, n_or);
+        defer b_or.deinit();
+        var c_or = try blazt.Matrix(f32, .col_major).init(alloc, m_or, n_or);
+        defer c_or.deinit();
+
+        for (a_or.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast(i % 1024)))) * @as(f32, 0.001);
+        for (b_or.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+        var res_gemm_or = try blazt.bench.run(alloc, "ops.gemm(f32,col_major,oracle_cmp)", .{
+            .warmup_iters = 2,
+            .samples = 10,
+            .inner_iters = 1,
+        }, gemmOpsColMajor, .{ m_or, n_or, k_or, a_or, b_or, &c_or });
+        defer res_gemm_or.deinit();
+        res_gemm_or.sortInPlace();
+        const g_or_p50 = blazt.bench.medianSortedNs(res_gemm_or.samples_ns);
+        const g_or_p90 = blazt.bench.percentileSortedNs(res_gemm_or.samples_ns, 0.90);
+        const g_or_p99 = blazt.bench.percentileSortedNs(res_gemm_or.samples_ns, 0.99);
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_gemm_or.name,
+                g_or_p50, blazt.bench.gflops(flops_or, g_or_p50),
+                g_or_p90, blazt.bench.gflops(flops_or, g_or_p90),
+                g_or_p99, blazt.bench.gflops(flops_or, g_or_p99),
+            },
+        );
+        try out_gemm.flush();
+
+        const oracle_name = switch (o.kind) {
+            .openblas => "oracle.sgemm(openblas,col_major)",
+            .blis => "oracle.sgemm(blis,col_major)",
+        };
+        var res_or = try blazt.bench.run(alloc, oracle_name, .{
+            .warmup_iters = 2,
+            .samples = 10,
+            .inner_iters = 1,
+        }, oracleSgemmOps, .{ o, m_or, n_or, k_or, a_or, b_or, &c_or });
+        defer res_or.deinit();
+        res_or.sortInPlace();
+        const or_p50 = blazt.bench.medianSortedNs(res_or.samples_ns);
+        const or_p90 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.90);
+        const or_p99 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.99);
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_or.name,
+                or_p50, blazt.bench.gflops(flops_or, or_p50),
+                or_p90, blazt.bench.gflops(flops_or, or_p90),
+                or_p99, blazt.bench.gflops(flops_or, or_p99),
             },
         );
         try out_gemm.flush();
