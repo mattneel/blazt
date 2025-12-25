@@ -2902,9 +2902,126 @@ pub const ops = struct {
     }
 
     // LAPACK
+    /// LU factorization with partial pivoting (in-place): computes `P*A = L*U`.
+    ///
+    /// - `a` is overwritten with `L` (strictly lower triangle, unit diagonal implied) and `U` (upper triangle).
+    /// - `ipiv` stores pivot indices **1-based** (LAPACK-style):
+    ///   - For each `k` in `0..min(m,n)`, a row interchange was performed between row `k` and row `ipiv[k]-1`.
+    ///   - Applying these swaps in order to the original matrix yields `P*A`.
+    /// - If a pivot is exactly 0, returns `error.Singular` (factorization stops).
     pub fn lu(comptime T: type, a: *matrix.Matrix(T, .row_major), ipiv: []i32) errors.LuError!void {
-        _ = .{ T, a, ipiv };
-        @panic("TODO: ops.lu");
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.lu currently only supports floating-point types");
+        }
+
+        const m: usize = a.rows;
+        const n: usize = a.cols;
+        const stride: usize = a.stride;
+        std.debug.assert(stride >= n);
+
+        const min_mn: usize = @min(m, n);
+        std.debug.assert(ipiv.len >= min_mn);
+
+        if (min_mn == 0) return;
+
+        var data = a.data;
+
+        const nb: usize = 32;
+        var j: usize = 0;
+        while (j < min_mn) : (j += nb) {
+            const jb: usize = @min(nb, min_mn - j);
+
+            // Factor panel A[j..m, j..j+jb) using unblocked LU with partial pivoting.
+            var jj: usize = 0;
+            while (jj < jb) : (jj += 1) {
+                const col: usize = j + jj;
+
+                // Find pivot row in col (max abs value among rows col..m-1).
+                var piv: usize = col;
+                var best_abs: T = @abs(data[col * stride + col]);
+                if (!std.math.isNan(best_abs)) {
+                    var r: usize = col + 1;
+                    while (r < m) : (r += 1) {
+                        const v: T = @abs(data[r * stride + col]);
+                        if (std.math.isNan(v)) {
+                            piv = r;
+                            break;
+                        }
+                        if (v > best_abs) {
+                            best_abs = v;
+                            piv = r;
+                        }
+                    }
+                }
+
+                ipiv[col] = @intCast(piv + 1); // 1-based
+
+                if (piv != col) {
+                    // Swap entire rows (affects previously computed columns too).
+                    const off_a = col * stride;
+                    const off_b = piv * stride;
+                    var ccol: usize = 0;
+                    while (ccol < n) : (ccol += 1) {
+                        const tmp = data[off_a + ccol];
+                        data[off_a + ccol] = data[off_b + ccol];
+                        data[off_b + ccol] = tmp;
+                    }
+                }
+
+                const pivot: T = data[col * stride + col];
+                if (pivot == @as(T, 0)) return error.Singular;
+
+                // Compute multipliers below the diagonal in this column.
+                var r: usize = col + 1;
+                while (r < m) : (r += 1) {
+                    data[r * stride + col] /= pivot;
+                }
+
+                // Update the rest of the panel (columns col+1 .. j+jb-1).
+                var k: usize = col + 1;
+                while (k < j + jb) : (k += 1) {
+                    const u: T = data[col * stride + k];
+                    var i: usize = col + 1;
+                    while (i < m) : (i += 1) {
+                        data[i * stride + k] -= data[i * stride + col] * u;
+                    }
+                }
+            }
+
+            const j2: usize = j + jb;
+
+            // Compute block row U12: solve L11 * U12 = A12 in-place (L11 is unit lower).
+            if (j2 < n) {
+                var k: usize = j2;
+                while (k < n) : (k += 1) {
+                    var i: usize = 0;
+                    while (i < jb) : (i += 1) {
+                        var tmp: T = data[(j + i) * stride + k];
+                        var p: usize = 0;
+                        while (p < i) : (p += 1) {
+                            tmp -= data[(j + i) * stride + (j + p)] * data[(j + p) * stride + k];
+                        }
+                        data[(j + i) * stride + k] = tmp;
+                    }
+                }
+            }
+
+            // Trailing update: A22 -= L21 * U12.
+            if (j2 < m and j2 < n) {
+                var i: usize = j2;
+                while (i < m) : (i += 1) {
+                    var k: usize = j2;
+                    while (k < n) : (k += 1) {
+                        var sum: T = @as(T, 0);
+                        var p: usize = 0;
+                        while (p < jb) : (p += 1) {
+                            sum += data[i * stride + (j + p)] * data[(j + p) * stride + k];
+                        }
+                        data[i * stride + k] -= sum;
+                    }
+                }
+            }
+        }
     }
 
     pub fn cholesky(comptime T: type, uplo: types.UpLo, a: *matrix.Matrix(T, .row_major)) errors.CholeskyError!void {

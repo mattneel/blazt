@@ -121,6 +121,18 @@ fn trsmOps(
     std.mem.doNotOptimizeAway(b.data[0]);
 }
 
+fn luOps(
+    n: usize,
+    a0: blazt.Matrix(f32, .row_major),
+    a: *blazt.Matrix(f32, .row_major),
+    ipiv: []i32,
+) void {
+    _ = n;
+    @memcpy(a.data, a0.data);
+    _ = blazt.ops.lu(f32, a, ipiv) catch unreachable;
+    std.mem.doNotOptimizeAway(a.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -1094,6 +1106,46 @@ pub fn main() !void {
             trsm_p50, blazt.bench.gflops(trsm_flops, trsm_p50),
             trsm_p90, blazt.bench.gflops(trsm_flops, trsm_p90),
             trsm_p99, blazt.bench.gflops(trsm_flops, trsm_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // LU bench (row_major, partial pivoting).
+    const n_lu: usize = 512;
+    var a0_lu = try blazt.Matrix(f32, .row_major).init(alloc, n_lu, n_lu);
+    defer a0_lu.deinit();
+    var a_lu = try blazt.Matrix(f32, .row_major).init(alloc, n_lu, n_lu);
+    defer a_lu.deinit();
+    const ipiv_lu = try alloc.alloc(i32, n_lu);
+    defer alloc.free(ipiv_lu);
+
+    for (0..n_lu) |i| {
+        for (0..n_lu) |j| {
+            a0_lu.atPtr(i, j).* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 37 + j * 17 + 11) % 1024)))) * @as(f32, 0.001);
+        }
+        a0_lu.atPtr(i, i).* += 5.0;
+    }
+
+    var res_lu = try blazt.bench.run(alloc, "ops.lu(f32,row_major)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, luOps, .{ n_lu, a0_lu, &a_lu, ipiv_lu });
+    defer res_lu.deinit();
+    res_lu.sortInPlace();
+    const lu_p50 = blazt.bench.medianSortedNs(res_lu.samples_ns);
+    const lu_p90 = blazt.bench.percentileSortedNs(res_lu.samples_ns, 0.90);
+    const lu_p99 = blazt.bench.percentileSortedNs(res_lu.samples_ns, 0.99);
+
+    // LU flops ~ 2/3 * n^3.
+    const lu_flops: u64 = @intCast((@as(u128, 2) * @as(u128, n_lu) * @as(u128, n_lu) * @as(u128, n_lu)) / 3);
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_lu.name,
+            lu_p50, blazt.bench.gflops(lu_flops, lu_p50),
+            lu_p90, blazt.bench.gflops(lu_flops, lu_p90),
+            lu_p99, blazt.bench.gflops(lu_flops, lu_p99),
         },
     );
     try out_gemm.flush();
