@@ -133,6 +133,15 @@ fn luOps(
     std.mem.doNotOptimizeAway(a.data[0]);
 }
 
+fn choleskyOps(
+    a0: blazt.Matrix(f32, .row_major),
+    a: *blazt.Matrix(f32, .row_major),
+) void {
+    @memcpy(a.data, a0.data);
+    _ = blazt.ops.cholesky(f32, .lower, a) catch unreachable;
+    std.mem.doNotOptimizeAway(a.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -1146,6 +1155,51 @@ pub fn main() !void {
             lu_p50, blazt.bench.gflops(lu_flops, lu_p50),
             lu_p90, blazt.bench.gflops(lu_flops, lu_p90),
             lu_p99, blazt.bench.gflops(lu_flops, lu_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // Cholesky bench (row_major, lower).
+    const n_chol: usize = 512;
+    var a0_chol = try blazt.Matrix(f32, .row_major).init(alloc, n_chol, n_chol);
+    defer a0_chol.deinit();
+    var a_chol = try blazt.Matrix(f32, .row_major).init(alloc, n_chol, n_chol);
+    defer a_chol.deinit();
+
+    // Symmetric strictly diagonally dominant => SPD.
+    for (0..n_chol) |i| {
+        for (0..n_chol) |j| {
+            if (i == j) {
+                a0_chol.atPtr(i, j).* = 10.0;
+            } else {
+                const v = @as(f32, @floatFromInt(@as(u32, @intCast((i * 37 + j * 17 + 11) % 1024)))) * @as(f32, 1e-6);
+                a0_chol.atPtr(i, j).* = v;
+            }
+        }
+    }
+    // Symmetrize explicitly.
+    for (0..n_chol) |j| for (j + 1..n_chol) |i| a0_chol.atPtr(i, j).* = a0_chol.at(j, i);
+
+    var res_chol = try blazt.bench.run(alloc, "ops.cholesky(f32,row_major,lower)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, choleskyOps, .{ a0_chol, &a_chol });
+    defer res_chol.deinit();
+    res_chol.sortInPlace();
+    const chol_p50 = blazt.bench.medianSortedNs(res_chol.samples_ns);
+    const chol_p90 = blazt.bench.percentileSortedNs(res_chol.samples_ns, 0.90);
+    const chol_p99 = blazt.bench.percentileSortedNs(res_chol.samples_ns, 0.99);
+
+    // Cholesky flops ~ 1/3 * n^3.
+    const chol_flops: u64 = @intCast((@as(u128, n_chol) * @as(u128, n_chol) * @as(u128, n_chol)) / 3);
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_chol.name,
+            chol_p50, blazt.bench.gflops(chol_flops, chol_p50),
+            chol_p90, blazt.bench.gflops(chol_flops, chol_p90),
+            chol_p99, blazt.bench.gflops(chol_flops, chol_p99),
         },
     );
     try out_gemm.flush();

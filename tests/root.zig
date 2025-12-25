@@ -40,6 +40,7 @@ comptime {
     _ = @import("symm_hemm_test.zig");
     _ = @import("trmm_trsm_test.zig");
     _ = @import("lu_test.zig");
+    _ = @import("cholesky_test.zig");
 }
 
 test {

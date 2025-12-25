@@ -3025,8 +3025,68 @@ pub const ops = struct {
     }
 
     pub fn cholesky(comptime T: type, uplo: types.UpLo, a: *matrix.Matrix(T, .row_major)) errors.CholeskyError!void {
-        _ = .{ T, uplo, a };
-        @panic("TODO: ops.cholesky");
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.cholesky currently only supports floating-point types");
+        }
+
+        const n: usize = a.rows;
+        std.debug.assert(a.cols == n);
+        std.debug.assert(a.stride >= a.cols);
+        if (n == 0) return;
+
+        // In-place unblocked Cholesky.
+        switch (uplo) {
+            .lower => {
+                // Compute L such that A = L*L^T. Store L in the lower triangle (unit is not implied).
+                for (0..n) |j| {
+                    var sum: T = a.data[j * a.stride + j];
+                    var k: usize = 0;
+                    while (k < j) : (k += 1) {
+                        const ljk = a.data[j * a.stride + k];
+                        sum -= ljk * ljk;
+                    }
+
+                    if (!(sum > @as(T, 0))) return error.NotPositiveDefinite;
+                    const ljj: T = @sqrt(sum);
+                    a.data[j * a.stride + j] = ljj;
+
+                    var i: usize = j + 1;
+                    while (i < n) : (i += 1) {
+                        var t: T = a.data[i * a.stride + j];
+                        k = 0;
+                        while (k < j) : (k += 1) {
+                            t -= a.data[i * a.stride + k] * a.data[j * a.stride + k];
+                        }
+                        a.data[i * a.stride + j] = t / ljj;
+                    }
+                }
+            },
+            .upper => {
+                // Compute U such that A = U^T*U. Store U in the upper triangle.
+                for (0..n) |j| {
+                    var sum: T = a.data[j * a.stride + j];
+                    var k: usize = 0;
+                    while (k < j) : (k += 1) {
+                        const ukj = a.data[k * a.stride + j];
+                        sum -= ukj * ukj;
+                    }
+
+                    if (!(sum > @as(T, 0))) return error.NotPositiveDefinite;
+                    const ujj: T = @sqrt(sum);
+                    a.data[j * a.stride + j] = ujj;
+
+                    var col: usize = j + 1;
+                    while (col < n) : (col += 1) {
+                        var t: T = a.data[j * a.stride + col];
+                        k = 0;
+                        while (k < j) : (k += 1) {
+                            t -= a.data[k * a.stride + j] * a.data[k * a.stride + col];
+                        }
+                        a.data[j * a.stride + col] = t / ujj;
+                    }
+                }
+            },
+        }
     }
 
     /// Index of the element with maximum absolute value.
