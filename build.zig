@@ -41,6 +41,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // GEMM prefetch hints (packed panels).
+    //
+    // These are build-time (comptime) constants consumed by `src/gemm.zig`.
+    const gemm_prefetch_opt = b.option(bool, "gemm_prefetch", "Enable GEMM packed-panel prefetch hints") orelse true;
+    const gemm_prefetch_a_k_opt = b.option(usize, "gemm_prefetch_a_k", "Prefetch distance (in k-iterations) for packed A panels; 0=auto") orelse 0;
+    const gemm_prefetch_b_k_opt = b.option(usize, "gemm_prefetch_b_k", "Prefetch distance (in k-iterations) for packed B panels; 0=auto") orelse 0;
+    const gemm_prefetch_locality_opt = b.option(u2, "gemm_prefetch_locality", "Prefetch locality hint (0-3)") orelse 3;
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "gemm_prefetch", gemm_prefetch_opt);
+    build_options.addOption(usize, "gemm_prefetch_a_k", gemm_prefetch_a_k_opt);
+    build_options.addOption(usize, "gemm_prefetch_b_k", gemm_prefetch_b_k_opt);
+    build_options.addOption(u2, "gemm_prefetch_locality", gemm_prefetch_locality_opt);
+    mod.addOptions("build_options", build_options);
+
     // Build-time CPU cache probing (native targets only).
     //
     // Zig 0.16's `builtin.cpu` exposes feature flags but not cache hierarchy. Since `blazt`

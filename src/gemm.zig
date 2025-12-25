@@ -3,6 +3,7 @@ const cpu = @import("cpu.zig");
 const simd = @import("simd.zig");
 const memory = @import("memory.zig");
 const matrix = @import("matrix.zig");
+const build_options = @import("build_options");
 
 pub const TileParams = struct {
     /// Micro-kernel rows.
@@ -25,6 +26,51 @@ pub const KernelVariant = enum {
     alpha_one_beta_zero,
     alpha_one_beta_one,
 };
+
+fn autoPrefetchDistanceK(comptime T: type, comptime elems_per_k: usize) usize {
+    // Heuristic: prefetch ~2 cache lines ahead, expressed in k-iterations.
+    const bytes_per_k: usize = elems_per_k * @sizeOf(T);
+    if (bytes_per_k == 0) return 0;
+    const iters_per_line: usize = (memory.CacheLine + bytes_per_k - 1) / bytes_per_k;
+    // Cap to avoid excessive lookahead on very small per-iter footprints.
+    return @min(iters_per_line * 2, 64);
+}
+
+inline fn prefetchPackedPanels(
+    comptime T: type,
+    comptime MR: usize,
+    comptime NR: usize,
+    kc: usize,
+    a: [*]const T,
+    b: [*]const T,
+    p: usize,
+) void {
+    if (!comptime build_options.gemm_prefetch) return;
+
+    const opts: simd.PrefetchOptions = .{
+        .rw = .read,
+        .locality = build_options.gemm_prefetch_locality,
+        .cache = .data,
+    };
+
+    const dist_a_k: usize = if (build_options.gemm_prefetch_a_k != 0)
+        build_options.gemm_prefetch_a_k
+    else
+        autoPrefetchDistanceK(T, MR);
+    const dist_b_k: usize = if (build_options.gemm_prefetch_b_k != 0)
+        build_options.gemm_prefetch_b_k
+    else
+        autoPrefetchDistanceK(T, NR);
+
+    if (dist_a_k != 0) {
+        const p_a = p + dist_a_k;
+        if (p_a < kc) simd.prefetch(&a[p_a * MR], opts);
+    }
+    if (dist_b_k != 0) {
+        const p_b = p + dist_b_k;
+        if (p_b < kc) simd.prefetch(&b[p_b * NR], opts);
+    }
+}
 
 /// Choose a GEMM kernel specialization based on scalar values.
 ///
@@ -160,6 +206,7 @@ pub fn microKernel(
 
     var p: usize = 0;
     while (p < kc) : (p += 1) {
+        prefetchPackedPanels(T, MR, NR, kc, a, b, p);
         const a_arr: [MR]T = a[p * MR ..][0..MR].*;
         const va: Vec = @bitCast(a_arr);
 
@@ -226,6 +273,7 @@ pub fn microKernelPartial(
 
     var p: usize = 0;
     while (p < kc) : (p += 1) {
+        prefetchPackedPanels(T, MR, NR, kc, a, b, p);
         const a_arr: [MR]T = a[p * MR ..][0..MR].*;
         const va: Vec = @bitCast(a_arr);
         inline for (0..NR) |j| {
