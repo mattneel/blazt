@@ -13,6 +13,7 @@ pub const Matrix = matrix.Matrix;
 pub const types = @import("types.zig");
 pub const Trans = types.Trans;
 pub const UpLo = types.UpLo;
+pub const Side = types.Side;
 pub const Diag = types.Diag;
 
 pub const errors = @import("errors.zig");

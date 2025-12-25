@@ -84,6 +84,17 @@ fn syr2kOps(
     std.mem.doNotOptimizeAway(c.data[0]);
 }
 
+fn symmOps(
+    m: usize,
+    n: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b: blazt.Matrix(f32, .row_major),
+    c: *blazt.Matrix(f32, .row_major),
+) void {
+    blazt.ops.symm(f32, .row_major, .left, .upper, m, n, 1.0, a, b, 0.0, c);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -935,6 +946,53 @@ pub fn main() !void {
             syr2k_p50, blazt.bench.gflops(syr2k_flops, syr2k_p50),
             syr2k_p90, blazt.bench.gflops(syr2k_flops, syr2k_p90),
             syr2k_p99, blazt.bench.gflops(syr2k_flops, syr2k_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // SYMM bench (row_major, side=left, upper, no_trans).
+    const m_symm: usize = 1024;
+    const n_symm: usize = 256;
+    var a_symm = try blazt.Matrix(f32, .row_major).init(alloc, m_symm, m_symm);
+    defer a_symm.deinit();
+    var b_symm = try blazt.Matrix(f32, .row_major).init(alloc, m_symm, n_symm);
+    defer b_symm.deinit();
+    var c_symm = try blazt.Matrix(f32, .row_major).init(alloc, m_symm, n_symm);
+    defer c_symm.deinit();
+
+    // Fill only upper triangle for A, and mirror it (so bench isn't dominated by NaN handling).
+    for (0..m_symm) |j| {
+        for (0..m_symm) |i| {
+            if (i <= j) {
+                a_symm.atPtr(i, j).* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 37 + j * 17 + 11) % 1024)))) * @as(f32, 0.001);
+            } else {
+                a_symm.atPtr(i, j).* = a_symm.at(j, i);
+            }
+        }
+    }
+    for (b_symm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 5) % 1024)))) * @as(f32, 0.0013);
+    for (c_symm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+    var res_symm = try blazt.bench.run(alloc, "ops.symm(f32,row_major,left,upper)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, symmOps, .{ m_symm, n_symm, a_symm, b_symm, &c_symm });
+    defer res_symm.deinit();
+    res_symm.sortInPlace();
+    const symm_p50 = blazt.bench.medianSortedNs(res_symm.samples_ns);
+    const symm_p90 = blazt.bench.percentileSortedNs(res_symm.samples_ns, 0.90);
+    const symm_p99 = blazt.bench.percentileSortedNs(res_symm.samples_ns, 0.99);
+
+    // Approx SYMM flops (left): same as GEMM: 2*m*m*n
+    const symm_flops: u64 = @intCast(@as(u64, 2) * @as(u64, m_symm) * @as(u64, m_symm) * @as(u64, n_symm));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_symm.name,
+            symm_p50, blazt.bench.gflops(symm_flops, symm_p50),
+            symm_p90, blazt.bench.gflops(symm_flops, symm_p90),
+            symm_p99, blazt.bench.gflops(symm_flops, symm_p99),
         },
     );
     try out_gemm.flush();
