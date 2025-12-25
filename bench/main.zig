@@ -876,6 +876,38 @@ pub fn main() !void {
         try out_gemm.flush();
     }
 
+    // "For shits and gigs": run a bigger pool (32 threads, or whatever the platform max is if < 32).
+    const cpu_threads: usize = std.Thread.getCpuCount() catch 8;
+    const threads32: usize = @min(@as(usize, 32), @max(cpu_threads, 1));
+    if (threads32 > 1 and threads32 != 2 and threads32 != 4 and threads32 != 8) {
+        var pool32 = try blazt.ThreadPool.init(alloc, .{ .thread_count = threads32 });
+        defer pool32.deinit();
+
+        const name32 = try std.fmt.allocPrint(alloc, "parallel.gemm(f32,row_major,threads={d})", .{threads32});
+        defer alloc.free(name32);
+
+        var res_pg32 = try blazt.bench.run(alloc, name32, .{
+            .warmup_iters = 2,
+            .samples = 10,
+            .inner_iters = 1,
+        }, gemmParallelOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm, &pool32 });
+        defer res_pg32.deinit();
+        res_pg32.sortInPlace();
+        const p50_32 = blazt.bench.medianSortedNs(res_pg32.samples_ns);
+        const p90_32 = blazt.bench.percentileSortedNs(res_pg32.samples_ns, 0.90);
+        const p99_32 = blazt.bench.percentileSortedNs(res_pg32.samples_ns, 0.99);
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_pg32.name,
+                p50_32, blazt.bench.gflops(gemm_flops, p50_32),
+                p90_32, blazt.bench.gflops(gemm_flops, p90_32),
+                p99_32, blazt.bench.gflops(gemm_flops, p99_32),
+            },
+        );
+        try out_gemm.flush();
+    }
+
     // %peak reporting:
     // - set `BLAZT_PEAK_GFLOPS` to your CPU's theoretical peak GFLOP/s
     // - %peak = (measured_gflops / peak_gflops) * 100
