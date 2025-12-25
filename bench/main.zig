@@ -63,6 +63,16 @@ fn gemmOps(
     std.mem.doNotOptimizeAway(c.data[0]);
 }
 
+fn syrkOps(
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .row_major),
+    c: *blazt.Matrix(f32, .row_major),
+) void {
+    blazt.ops.syrk(f32, .row_major, .upper, .no_trans, n, k, 1.0, a, 0.0, c);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -841,6 +851,41 @@ pub fn main() !void {
             gg_p50, blazt.bench.gflops(gemm_flops, gg_p50),
             gg_p90, blazt.bench.gflops(gemm_flops, gg_p90),
             gg_p99, blazt.bench.gflops(gemm_flops, gg_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // SYRK (rank-k update) bench (row_major, upper, no_trans).
+    const n_syrk: usize = 1024;
+    const k_syrk: usize = 256;
+    var a_syrk = try blazt.Matrix(f32, .row_major).init(alloc, n_syrk, k_syrk);
+    defer a_syrk.deinit();
+    var c_syrk = try blazt.Matrix(f32, .row_major).init(alloc, n_syrk, n_syrk);
+    defer c_syrk.deinit();
+
+    for (a_syrk.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast(i % 1024)))) * @as(f32, 0.001);
+    for (c_syrk.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+    var res_syrk = try blazt.bench.run(alloc, "ops.syrk(f32,row_major,upper)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, syrkOps, .{ n_syrk, k_syrk, a_syrk, &c_syrk });
+    defer res_syrk.deinit();
+    res_syrk.sortInPlace();
+    const syrk_p50 = blazt.bench.medianSortedNs(res_syrk.samples_ns);
+    const syrk_p90 = blazt.bench.percentileSortedNs(res_syrk.samples_ns, 0.90);
+    const syrk_p99 = blazt.bench.percentileSortedNs(res_syrk.samples_ns, 0.99);
+
+    // SYRK flops: 2*k * (n*(n+1)/2) = k*n*(n+1)
+    const syrk_flops: u64 = @intCast(@as(u64, k_syrk) * @as(u64, n_syrk) * @as(u64, n_syrk + 1));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_syrk.name,
+            syrk_p50, blazt.bench.gflops(syrk_flops, syrk_p50),
+            syrk_p90, blazt.bench.gflops(syrk_flops, syrk_p90),
+            syrk_p99, blazt.bench.gflops(syrk_flops, syrk_p99),
         },
     );
     try out_gemm.flush();

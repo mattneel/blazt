@@ -36,6 +36,7 @@ comptime {
     _ = @import("gemm_oracle_parity_test.zig");
     _ = @import("nt_stores_test.zig");
     _ = @import("sve_test.zig");
+    _ = @import("syrk_herk_test.zig");
 }
 
 test {
