@@ -1,6 +1,8 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+pub const cache = @import("cpu_cache");
+
 pub const CacheDefaults = struct {
     // Conservative defaults when target cache info is unknown.
     pub const l1d_size_bytes: usize = 32 * 1024;
@@ -23,20 +25,31 @@ pub const CpuInfo = struct {
     l1d_line_bytes: usize,
     l2_size_bytes: usize,
     l3_size_bytes: usize,
+    // Cache sharing (logical CPUs per cache instance)
+    l1d_shared_by_logical_cpus: usize,
+    l2_shared_by_logical_cpus: usize,
+    l3_shared_by_logical_cpus: usize,
 
     pub fn native() CpuInfo {
         const cpu = builtin.cpu;
 
-        // Zig 0.16: Target.Cpu does not expose cache sizes; use conservative defaults.
-        const l1d_size = CacheDefaults.l1d_size_bytes;
-        const l1d_line = CacheDefaults.l1d_line_bytes;
-        const l2_size = CacheDefaults.l2_size_bytes;
-        const l3_size = CacheDefaults.l3_size_bytes;
+        // Zig 0.16: Target.Cpu does not expose cache sizes; use build-time-probed cache
+        // constants when available (see `build.zig`), otherwise fall back to defaults.
+        const l1d_size = cache.l1d_size_bytes;
+        const l1d_line = cache.l1d_line_bytes;
+        const l2_size = cache.l2_size_bytes;
+        const l3_size = cache.l3_size_bytes;
+        const l1d_shared = cache.l1d_shared_by_logical_cpus;
+        const l2_shared = cache.l2_shared_by_logical_cpus;
+        const l3_shared = cache.l3_shared_by_logical_cpus;
 
         std.debug.assert(l1d_size > 0);
         std.debug.assert(l1d_line > 0);
         std.debug.assert(l2_size > 0);
         std.debug.assert(l3_size > 0);
+        std.debug.assert(l1d_shared > 0);
+        std.debug.assert(l2_shared > 0);
+        std.debug.assert(l3_shared > 0);
 
         return .{
             // Feature detection is arch-family aware in Zig 0.16.
@@ -49,8 +62,9 @@ pub const CpuInfo = struct {
             .l1d_line_bytes = l1d_line,
             .l2_size_bytes = l2_size,
             .l3_size_bytes = l3_size,
+            .l1d_shared_by_logical_cpus = l1d_shared,
+            .l2_shared_by_logical_cpus = l2_shared,
+            .l3_shared_by_logical_cpus = l3_shared,
         };
     }
 };
-
-

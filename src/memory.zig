@@ -1,6 +1,15 @@
 const std = @import("std");
+const cpu_cache = @import("cpu_cache");
 
-pub const CacheLine: usize = 64;
+fn sanitizeCacheLineBytes(comptime line_bytes: usize) usize {
+    const min_line: usize = std.atomic.cache_line;
+    const base: usize = @max(line_bytes, min_line);
+    if (base == 0) return 64;
+    if (std.math.isPowerOfTwo(base)) return base;
+    return std.math.ceilPowerOfTwo(usize, base) catch 64;
+}
+
+pub const CacheLine: usize = sanitizeCacheLineBytes(cpu_cache.l1d_line_bytes);
 
 pub fn allocAligned(
     allocator: std.mem.Allocator,
@@ -99,5 +108,3 @@ pub fn ensureAligned(comptime alignment: usize, ptr: anytype) AlignedPointerType
 
     return @as(AlignedPointerType(Ptr, alignment), @alignCast(ptr));
 }
-
-

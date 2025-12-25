@@ -41,6 +41,44 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // Build-time CPU cache probing (native targets only).
+    //
+    // Zig 0.16's `builtin.cpu` exposes feature flags but not cache hierarchy. Since `blazt`
+    // computes tiling parameters at comptime, we generate a tiny Zig module at build time
+    // containing detected cache sizes (x86 CPUID), and import it as `@import("cpu_cache")`.
+    const cpu_probe_opt = b.option(bool, "cpu_probe", "Enable build-time CPU cache probing (native CPU model only)") orelse true;
+    const cpu_model_is_native = switch (target.query.cpu_model) {
+        .native => true,
+        else => target.query.isNative(),
+    };
+    const do_cpu_probe = cpu_probe_opt and cpu_model_is_native;
+
+    const cpu_cache_src = blk: {
+        if (!do_cpu_probe) break :blk b.path("src/cpu_cache_default.zig");
+
+        const probe_exe = b.addExecutable(.{
+            .name = "cpu_probe",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/cpu_probe.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseFast,
+            }),
+        });
+
+        const run_probe = b.addRunArtifact(probe_exe);
+        break :blk run_probe.captureStdOut(.{ .basename = "cpu_cache.zig", .trim_whitespace = .none });
+    };
+
+    mod.addAnonymousImport("cpu_cache", .{
+        .root_source_file = cpu_cache_src,
+        .target = target,
+    });
+
+    // Convenience step: write the generated cpu_cache module into zig-out/ for inspection.
+    const cpu_cache_step = b.step("cpu-cache", "Write cpu_cache.zig into zig-out/ (for inspection)");
+    const install_cpu_cache = b.addInstallFile(cpu_cache_src, "cpu_cache.zig");
+    cpu_cache_step.dependOn(&install_cpu_cache.step);
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business

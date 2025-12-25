@@ -8,6 +8,8 @@
 Development notes:
 - Zig 0.16 API/syntax gotchas encountered in this repo: [`docs/zig-gotchas.md`](docs/zig-gotchas.md)
 - Optimized Zig “northern star”: [`docs/kangarootwelve.zig`](docs/kangarootwelve.zig) — one of the most beautiful examples of optimized Zig we’ve ever seen; we should aspire to implement and refactor our ops/kernels/etc using the same idioms.
+- Building with **native CPU features** (AVX2/AVX512/FMA, etc): `zig build test -Dcpu=native` (you can also pass a specific model like `-Dcpu=znver2`, and add/subtract features with `+feat/-feat` syntax).
+- Inspecting build-time CPU cache constants: `zig build cpu-cache` then open `zig-out/cpu_cache.zig`.
 
 ---
 
