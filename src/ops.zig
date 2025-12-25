@@ -3,6 +3,8 @@ const types = @import("types.zig");
 const matrix = @import("matrix.zig");
 const errors = @import("errors.zig");
 const simd = @import("simd.zig");
+const gemm_mod = @import("gemm.zig");
+const memory = @import("memory.zig");
 
 pub const ops = struct {
     // Level 1 (stubs; implemented incrementally)
@@ -912,16 +914,330 @@ pub const ops = struct {
     // Level 3
     pub fn gemm(
         comptime T: type,
+        comptime layout: matrix.Layout,
         trans_a: types.Trans,
         trans_b: types.Trans,
         alpha: T,
-        a: matrix.Matrix(T, .row_major), // placeholder; generalized later
-        b: matrix.Matrix(T, .row_major), // placeholder; generalized later
+        a: matrix.Matrix(T, layout),
+        b: matrix.Matrix(T, layout),
         beta: T,
-        c: *matrix.Matrix(T, .row_major), // placeholder; generalized later
+        c: *matrix.Matrix(T, layout),
     ) void {
-        _ = .{ T, trans_a, trans_b, alpha, a, b, beta, c };
-        @panic("TODO: ops.gemm");
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.gemm currently only supports floating-point types");
+        }
+
+        // For real types, `.conj_trans` is equivalent to `.trans`.
+        const eff_a: types.Trans = switch (trans_a) {
+            .no_trans => .no_trans,
+            .trans, .conj_trans => .trans,
+        };
+        const eff_b: types.Trans = switch (trans_b) {
+            .no_trans => .no_trans,
+            .trans, .conj_trans => .trans,
+        };
+
+        const m: usize = c.rows;
+        const n: usize = c.cols;
+
+        // Validate storage invariants for strided matrices (debug only).
+        switch (layout) {
+            .row_major => {
+                std.debug.assert(a.stride >= a.cols);
+                std.debug.assert(b.stride >= b.cols);
+                std.debug.assert(c.stride >= c.cols);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.rows - 1) * a.stride + a.cols <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.rows - 1) * b.stride + b.cols <= b.data.len);
+                if (c.rows != 0 and c.cols != 0) std.debug.assert((c.rows - 1) * c.stride + c.cols <= c.data.len);
+            },
+            .col_major => {
+                std.debug.assert(a.stride >= a.rows);
+                std.debug.assert(b.stride >= b.rows);
+                std.debug.assert(c.stride >= c.rows);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.cols - 1) * a.stride + a.rows <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.cols - 1) * b.stride + b.rows <= b.data.len);
+                if (c.rows != 0 and c.cols != 0) std.debug.assert((c.cols - 1) * c.stride + c.rows <= c.data.len);
+            },
+        }
+
+        // Determine k and validate dimensions against transposes:
+        // op(A) is m×k, op(B) is k×n, C is m×n.
+        const k: usize = blk: {
+            if (eff_a == .no_trans) {
+                std.debug.assert(a.rows == m);
+                break :blk a.cols;
+            } else {
+                std.debug.assert(a.cols == m);
+                break :blk a.rows;
+            }
+        };
+
+        if (eff_b == .no_trans) {
+            std.debug.assert(b.rows == k);
+            std.debug.assert(b.cols == n);
+        } else {
+            std.debug.assert(b.cols == k);
+            std.debug.assert(b.rows == n);
+        }
+
+        if (m == 0 or n == 0) return;
+
+        // alpha==0 or k==0 => C := beta*C (beta=0 avoids reading C)
+        if (k == 0 or alpha == @as(T, 0)) {
+            if (beta == @as(T, 0)) {
+                switch (layout) {
+                    .row_major => {
+                        for (0..m) |i| {
+                            const row_off = i * c.stride;
+                            @memset(c.data[row_off .. row_off + n], @as(T, 0));
+                        }
+                    },
+                    .col_major => {
+                        for (0..n) |j| {
+                            const col_off = j * c.stride;
+                            for (0..m) |i| c.data[col_off + i] = @as(T, 0);
+                        }
+                    },
+                }
+            } else if (beta != @as(T, 1)) {
+                switch (layout) {
+                    .row_major => {
+                        for (0..m) |i| {
+                            const row_off = i * c.stride;
+                            for (0..n) |j| c.data[row_off + j] *= beta;
+                        }
+                    },
+                    .col_major => {
+                        for (0..n) |j| {
+                            const col_off = j * c.stride;
+                            for (0..m) |i| c.data[col_off + i] *= beta;
+                        }
+                    },
+                }
+            }
+            return;
+        }
+
+        // Fast path: use the cache-blocked kernel for the common case.
+        if (eff_a == .no_trans and eff_b == .no_trans) {
+            const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
+            var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+            var pack_b: [P.NR * P.KC]T align(memory.CacheLine) = undefined;
+
+            switch (layout) {
+                .col_major => {
+                    gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a[0..], pack_b[0..]);
+                    return;
+                },
+                .row_major => {
+                    // Row-major GEMM can be expressed as a col-major GEMM on transposed views:
+                    // (A*B)^T = B^T * A^T
+                    const a_t: matrix.Matrix(T, .col_major) = .{
+                        .data = a.data,
+                        .rows = a.cols,
+                        .cols = a.rows,
+                        .stride = a.stride,
+                        .allocator = a.allocator,
+                    };
+                    const b_t: matrix.Matrix(T, .col_major) = .{
+                        .data = b.data,
+                        .rows = b.cols,
+                        .cols = b.rows,
+                        .stride = b.stride,
+                        .allocator = b.allocator,
+                    };
+                    var c_t: matrix.Matrix(T, .col_major) = .{
+                        .data = c.data,
+                        .rows = c.cols,
+                        .cols = c.rows,
+                        .stride = c.stride,
+                        .allocator = c.allocator,
+                    };
+
+                    gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a[0..], pack_b[0..]);
+                    return;
+                },
+            }
+        }
+
+        // Fallback: generic triple loop supporting transposes and stride.
+        const aAt = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const bAt = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+
+        switch (layout) {
+            .row_major => {
+                switch (eff_a) {
+                    .no_trans => switch (eff_b) {
+                        .no_trans => {
+                            for (0..m) |i| {
+                                const row_off = i * c.stride;
+                                for (0..n) |j| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, i, p) * bAt(b, p, j);
+                                    const idx = row_off + j;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        .trans => {
+                            for (0..m) |i| {
+                                const row_off = i * c.stride;
+                                for (0..n) |j| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, i, p) * bAt(b, j, p);
+                                    const idx = row_off + j;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => unreachable,
+                    },
+                    .trans => switch (eff_b) {
+                        .no_trans => {
+                            for (0..m) |i| {
+                                const row_off = i * c.stride;
+                                for (0..n) |j| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, p, i) * bAt(b, p, j);
+                                    const idx = row_off + j;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        .trans => {
+                            for (0..m) |i| {
+                                const row_off = i * c.stride;
+                                for (0..n) |j| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, p, i) * bAt(b, j, p);
+                                    const idx = row_off + j;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => unreachable,
+                    },
+                    else => unreachable,
+                }
+            },
+            .col_major => {
+                switch (eff_a) {
+                    .no_trans => switch (eff_b) {
+                        .no_trans => {
+                            for (0..n) |j| {
+                                const col_off = j * c.stride;
+                                for (0..m) |i| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, i, p) * bAt(b, p, j);
+                                    const idx = col_off + i;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        .trans => {
+                            for (0..n) |j| {
+                                const col_off = j * c.stride;
+                                for (0..m) |i| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, i, p) * bAt(b, j, p);
+                                    const idx = col_off + i;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => unreachable,
+                    },
+                    .trans => switch (eff_b) {
+                        .no_trans => {
+                            for (0..n) |j| {
+                                const col_off = j * c.stride;
+                                for (0..m) |i| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, p, i) * bAt(b, p, j);
+                                    const idx = col_off + i;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        .trans => {
+                            for (0..n) |j| {
+                                const col_off = j * c.stride;
+                                for (0..m) |i| {
+                                    var sum: T = @as(T, 0);
+                                    for (0..k) |p| sum += aAt(a, p, i) * bAt(b, j, p);
+                                    const idx = col_off + i;
+                                    if (beta == @as(T, 0)) {
+                                        c.data[idx] = alpha * sum;
+                                    } else if (beta == @as(T, 1)) {
+                                        c.data[idx] = alpha * sum + c.data[idx];
+                                    } else {
+                                        c.data[idx] = alpha * sum + beta * c.data[idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => unreachable,
+                    },
+                    else => unreachable,
+                }
+            },
+        }
     }
 
     // LAPACK

@@ -28,6 +28,7 @@ comptime {
     _ = @import("gemm_microkernel_test.zig");
     _ = @import("gemm_pack_test.zig");
     _ = @import("gemm_macrokernel_test.zig");
+    _ = @import("gemm_ops_test.zig");
     _ = @import("gemm_kernel_variant_test.zig");
 }
 
