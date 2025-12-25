@@ -35,12 +35,23 @@ pub const ThreadPool = struct {
         errdefer allocator.destroy(shared);
 
         shared.* = undefined;
-        shared.inject.init();
-        shared.deque = try WorkStealingDeque.init(allocator, options.deque_capacity);
-        errdefer shared.deque.deinit(allocator);
-        shared.task_pool = try TaskPool.init(allocator, options.task_capacity);
-        errdefer shared.task_pool.deinit(allocator);
-        shared.epoch = .init(0);
+        shared.mutex = .{};
+        shared.cond = .{};
+        {
+            const queue = try allocator.alloc(?*Task, options.deque_capacity);
+            errdefer allocator.free(queue);
+            @memset(queue, null);
+
+            var task_pool = try TaskPool.init(allocator, options.task_capacity);
+            errdefer task_pool.deinit(allocator);
+
+            shared.queue = queue;
+            shared.task_pool = task_pool;
+        }
+        shared.q_mask = options.deque_capacity - 1;
+        shared.q_head = 0;
+        shared.q_tail = 0;
+        shared.q_len = 0;
         shared.pending = .init(0);
         shared.shutdown = .init(false);
         errdefer shared.deinit(allocator);
@@ -76,8 +87,10 @@ pub const ThreadPool = struct {
         // Ensure all submitted work is complete before shutting down.
         self.waitAll();
 
+        self.shared.mutex.lock();
         self.shared.shutdown.store(true, .release);
-        self.signalWorkers();
+        self.shared.cond.broadcast();
+        self.shared.mutex.unlock();
 
         for (self.threads) |t| t.join();
 
@@ -98,8 +111,20 @@ pub const ThreadPool = struct {
         // Track work before publishing the task.
         _ = self.shared.pending.fetchAdd(1, .acq_rel);
 
-        self.shared.inject.push(task);
-        self.signalWorkers();
+        self.shared.mutex.lock();
+        defer self.shared.mutex.unlock();
+
+        if (self.shared.q_len >= self.shared.queue.len) {
+            // Should not happen when queue capacity >= task pool capacity, but handle gracefully.
+            _ = self.shared.pending.fetchSub(1, .acq_rel);
+            self.shared.task_pool.free(task);
+            return error.QueueFull;
+        }
+
+        self.shared.queue[self.shared.q_tail] = task;
+        self.shared.q_tail = (self.shared.q_tail + 1) & self.shared.q_mask;
+        self.shared.q_len += 1;
+        self.shared.cond.signal();
     }
 
     pub fn waitAll(self: *ThreadPool) void {
@@ -110,11 +135,7 @@ pub const ThreadPool = struct {
         }
     }
 
-    fn signalWorkers(self: *ThreadPool) void {
-        // Bump epoch and wake everyone (cheap when nobody is sleeping; Futex is cold).
-        _ = self.shared.epoch.fetchAdd(1, .seq_cst);
-        std.Thread.Futex.wake(&self.shared.epoch, std.math.maxInt(u32));
-    }
+    // Worker wakeups are managed via `shared.cond`.
 };
 
 const Worker = struct {
@@ -122,27 +143,24 @@ const Worker = struct {
     index: u32,
 
     fn main(self: *Worker) void {
-        // Worker event loop (intentionally unbounded).
         while (true) {
-            if (self.shared.shutdown.load(.acquire)) return;
-
-            // Worker 0 drains the injection queue and owns push/pop on the deque.
-            if (self.index == 0) {
-                self.drainInject();
-                if (self.shared.deque.pop()) |task| {
-                    self.execute(task);
-                    continue;
-                }
-            } else {
-                if (self.shared.deque.steal()) |task| {
-                    self.execute(task);
-                    continue;
-                }
+            self.shared.mutex.lock();
+            while (self.shared.q_len == 0 and !self.shared.shutdown.load(.acquire)) {
+                self.shared.cond.wait(&self.shared.mutex);
             }
 
-            // Nothing to do: sleep until epoch changes (or spurious wakeup).
-            const expect = self.shared.epoch.load(.seq_cst);
-            std.Thread.Futex.wait(&self.shared.epoch, expect);
+            if (self.shared.q_len == 0 and self.shared.shutdown.load(.acquire)) {
+                self.shared.mutex.unlock();
+                return;
+            }
+
+            const task = self.shared.queue[self.shared.q_head].?;
+            self.shared.queue[self.shared.q_head] = null;
+            self.shared.q_head = (self.shared.q_head + 1) & self.shared.q_mask;
+            self.shared.q_len -= 1;
+            self.shared.mutex.unlock();
+
+            self.execute(task);
         }
     }
 
@@ -161,14 +179,7 @@ const Worker = struct {
         }
     }
 
-    fn drainInject(self: *Worker) void {
-        while (self.shared.inject.pop()) |task| {
-            self.shared.deque.push(task) catch {
-                // Deque should be sized to hold all in-flight tasks. If not, fail loudly.
-                @panic("thread pool deque overflow");
-            };
-        }
-    }
+    // (no per-worker queue helpers; work is taken from the shared ring buffer)
 };
 
 const Task = struct {
@@ -283,15 +294,19 @@ const InjectQueue = struct {
 };
 
 const Shared = struct {
-    inject: InjectQueue,
-    deque: WorkStealingDeque,
+    mutex: std.Thread.Mutex,
+    cond: std.Thread.Condition,
+    queue: []?*Task,
+    q_mask: usize,
+    q_head: usize,
+    q_tail: usize,
+    q_len: usize,
     task_pool: TaskPool,
-    epoch: std.atomic.Value(u32),
     pending: std.atomic.Value(u32),
     shutdown: std.atomic.Value(bool),
 
     fn deinit(self: *Shared, allocator: std.mem.Allocator) void {
-        self.deque.deinit(allocator);
+        allocator.free(self.queue);
         self.task_pool.deinit(allocator);
         self.* = undefined;
     }
@@ -331,7 +346,8 @@ const WorkStealingDeque = struct {
             return error.QueueFull;
         }
 
-        self.buffer[tail & self.mask].store(task, .unordered);
+        // Publish the task pointer before making it visible via `tail`.
+        self.buffer[tail & self.mask].store(task, .release);
         self.tail.store(tail +% 1, .release);
     }
 
@@ -349,7 +365,14 @@ const WorkStealingDeque = struct {
             return null;
         }
 
-        const task = self.buffer[tail & self.mask].load(.unordered);
+        // This slot must have been published before `tail` advanced.
+        const task = self.buffer[tail & self.mask].load(.acquire) orelse blk: {
+            // Extremely unlikely: if publication is observed out-of-order, spin until visible.
+            while (true) {
+                if (self.buffer[tail & self.mask].load(.acquire)) |t| break :blk t;
+                std.atomic.spinLoopHint();
+            }
+        };
 
         if (head == tail) {
             // Last item: race with thieves.
@@ -371,13 +394,16 @@ const WorkStealingDeque = struct {
 
             if (head >= tail) return null;
 
-            const task = self.buffer[head & self.mask].load(.unordered);
-
             if (self.head.cmpxchgWeak(head, head +% 1, .seq_cst, .monotonic)) |new_head| {
                 head = new_head;
                 continue;
             }
-            return task;
+
+            // Claimed index `head` successfully; wait until the slot's pointer is visible.
+            while (true) {
+                if (self.buffer[head & self.mask].load(.acquire)) |task| return task;
+                std.atomic.spinLoopHint();
+            }
         }
     }
 };
