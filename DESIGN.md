@@ -119,6 +119,14 @@ We’ll support arbitrary `M/N/K` via:
 
 The exact strategy is tuned after correctness is established.
 
+### ARM SVE (scalable vectors): decision / status
+
+Zig’s `@Vector` types are **fixed-length at comptime**, while ARM SVE vector length (VL) is **runtime-selected per CPU** (scalable vectors). Zig 0.16 exposes the `.sve` feature flag, but does not provide a stable way to express scalable `nxv*` vectors in user code.
+
+**Decision:** defer native SVE kernels for now; treat SVE-capable targets as NEON-shaped (fixed-width) until a viable strategy exists.
+
+**Follow-ups (beads):** `blazt-w3e`, `blazt-adk`
+
 ## Parallelism plan (thread pool + decomposition)
 
 ### Thread pool responsibilities
@@ -146,5 +154,5 @@ First parallel strategy (simple + low false-sharing risk):
 
 ## Open questions (tracked in beads)
 
-- SVE: dynamic vector length strategy (`blazt-10o.5.14`)
+- SVE: dynamic vector length strategy (deferred; follow-ups: `blazt-w3e`, `blazt-adk`)
 - Exact tolerance policy per op and per float mode
