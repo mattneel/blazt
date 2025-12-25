@@ -50,6 +50,33 @@ fn gerOps(m: usize, n: usize, a: *blazt.Matrix(f32, .row_major), x: []const f32,
     std.mem.doNotOptimizeAway(a.data[0]);
 }
 
+fn gemmOps(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b: blazt.Matrix(f32, .row_major),
+    c: *blazt.Matrix(f32, .row_major),
+) void {
+    _ = .{ m, n, k };
+    blazt.ops.gemm(f32, .row_major, .no_trans, .no_trans, 1.0, a, b, 0.0, c);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
+fn gemmParallelOps(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b: blazt.Matrix(f32, .row_major),
+    c: *blazt.Matrix(f32, .row_major),
+    pool: *blazt.ThreadPool,
+) void {
+    _ = .{ m, n, k };
+    blazt.parallel.gemm(f32, .no_trans, .no_trans, 1.0, a, b, 0.0, c, pool);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
 fn trmvOps(n: usize, a: blazt.Matrix(f32, .row_major), x: []f32) void {
     blazt.ops.trmv(f32, .row_major, .upper, .no_trans, .unit, n, a, x);
     std.mem.doNotOptimizeAway(x[0]);
@@ -672,6 +699,76 @@ pub fn main() !void {
         },
     );
     try out4.flush();
+
+    // GEMM benchmark (row_major, no_trans, beta=0) - sequential vs parallel scaling.
+    const m_gemm: usize = 1024;
+    const n_gemm: usize = 1024;
+    const k_gemm: usize = 1024;
+
+    var a_gemm = try blazt.Matrix(f32, .row_major).init(alloc, m_gemm, k_gemm);
+    defer a_gemm.deinit();
+    var b_gemm = try blazt.Matrix(f32, .row_major).init(alloc, k_gemm, n_gemm);
+    defer b_gemm.deinit();
+    var c_gemm = try blazt.Matrix(f32, .row_major).init(alloc, m_gemm, n_gemm);
+    defer c_gemm.deinit();
+
+    for (a_gemm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast(i % 1024)))) * @as(f32, 0.001);
+    for (b_gemm.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+    const gemm_flops: u64 = @intCast(@as(u64, 2) * @as(u64, m_gemm) * @as(u64, n_gemm) * @as(u64, k_gemm));
+    const out_gemm = &stdout_writer.interface;
+
+    var res_gemm = try blazt.bench.run(alloc, "ops.gemm(f32,row_major)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, gemmOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm });
+    defer res_gemm.deinit();
+    res_gemm.sortInPlace();
+    const gg_p50 = blazt.bench.medianSortedNs(res_gemm.samples_ns);
+    const gg_p90 = blazt.bench.percentileSortedNs(res_gemm.samples_ns, 0.90);
+    const gg_p99 = blazt.bench.percentileSortedNs(res_gemm.samples_ns, 0.99);
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_gemm.name,
+            gg_p50, blazt.bench.gflops(gemm_flops, gg_p50),
+            gg_p90, blazt.bench.gflops(gemm_flops, gg_p90),
+            gg_p99, blazt.bench.gflops(gemm_flops, gg_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // Parallel variants (fixed-size pools so we don't include init costs).
+    var pool2 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 2 });
+    defer pool2.deinit();
+    var pool4 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 4 });
+    defer pool4.deinit();
+    var pool8 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 8 });
+    defer pool8.deinit();
+
+    inline for (.{ .{ "parallel.gemm(f32,row_major,threads=2)", &pool2 }, .{ "parallel.gemm(f32,row_major,threads=4)", &pool4 }, .{ "parallel.gemm(f32,row_major,threads=8)", &pool8 } }) |cfg| {
+        var res_pg = try blazt.bench.run(alloc, cfg[0], .{
+            .warmup_iters = 2,
+            .samples = 10,
+            .inner_iters = 1,
+        }, gemmParallelOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm, cfg[1] });
+        defer res_pg.deinit();
+        res_pg.sortInPlace();
+        const pg_p50 = blazt.bench.medianSortedNs(res_pg.samples_ns);
+        const pg_p90 = blazt.bench.percentileSortedNs(res_pg.samples_ns, 0.90);
+        const pg_p99 = blazt.bench.percentileSortedNs(res_pg.samples_ns, 0.99);
+        try out_gemm.print(
+            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+            .{
+                res_pg.name,
+                pg_p50, blazt.bench.gflops(gemm_flops, pg_p50),
+                pg_p90, blazt.bench.gflops(gemm_flops, pg_p90),
+                pg_p99, blazt.bench.gflops(gemm_flops, pg_p99),
+            },
+        );
+        try out_gemm.flush();
+    }
 }
 
 

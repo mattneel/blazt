@@ -78,7 +78,7 @@ When comparing against OpenBLAS/BLIS:
 
 ### Resource napkin math (sanity checks)
 
-GEMM \(C_{M×N} = A_{M×K} B_{K×N}\) does \(2MNK\) FLOPs.
+GEMM \(C*{M×N} = A*{M×K} B\_{K×N}\) does \(2MNK\) FLOPs.
 
 - **Arithmetic intensity** increases with matrix size and effective blocking.
 - For large matrices, GEMM should be compute-bound if packing avoids cache/TLB thrash.
@@ -131,5 +131,3 @@ First parallel strategy (simple + low false-sharing risk):
 
 - SVE: dynamic vector length strategy (`blazt-10o.5.14`)
 - Exact tolerance policy per op and per float mode
-
-

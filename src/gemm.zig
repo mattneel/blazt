@@ -329,6 +329,27 @@ pub fn gemmBlocked(
     pack_a: []align(memory.CacheLine) T,
     pack_b: []align(memory.CacheLine) T,
 ) void {
+    gemmBlockedRange(T, m, n, k, alpha, a, b, beta, c, pack_a, pack_b, 0, n);
+}
+
+/// Cache-blocked GEMM macro-kernel restricted to a column range of C/B.
+///
+/// Like `gemmBlocked`, but computes only columns `jc0..jc1` (0 <= jc0 <= jc1 <= n).
+pub fn gemmBlockedRange(
+    comptime T: type,
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: T,
+    a: matrix.Matrix(T, .col_major),
+    b: matrix.Matrix(T, .col_major),
+    beta: T,
+    c: *matrix.Matrix(T, .col_major),
+    pack_a: []align(memory.CacheLine) T,
+    pack_b: []align(memory.CacheLine) T,
+    jc0: usize,
+    jc1: usize,
+) void {
     if (comptime @typeInfo(T) != .float) {
         @compileError("gemmBlocked only supports floating-point types");
     }
@@ -340,14 +361,25 @@ pub fn gemmBlocked(
     std.debug.assert(m == c.rows);
     std.debug.assert(n == c.cols);
 
-    if (m == 0 or n == 0) return;
+    std.debug.assert(jc0 <= jc1);
+    std.debug.assert(jc1 <= n);
+
+    if (m == 0 or n == 0 or jc0 == jc1) return;
 
     // alpha==0 or k==0 => C := beta*C
     if (k == 0 or alpha == @as(T, 0)) {
         if (beta == @as(T, 0)) {
-            @memset(c.data, @as(T, 0));
+            // Zero only the selected column range.
+            for (jc0..jc1) |j| {
+                const col_off = j * c.stride;
+                for (0..m) |i| c.data[col_off + i] = @as(T, 0);
+            }
         } else if (beta != @as(T, 1)) {
-            for (c.data) |*v| v.* *= beta;
+            // Scale only the selected column range.
+            for (jc0..jc1) |j| {
+                const col_off = j * c.stride;
+                for (0..m) |i| c.data[col_off + i] *= beta;
+            }
         }
         return;
     }
@@ -365,9 +397,9 @@ pub fn gemmBlocked(
     const rs_c: usize = 1;
     const cs_c: usize = c.stride;
 
-    var jc: usize = 0;
-    while (jc < n) : (jc += NC) {
-        const nc_cur = @min(NC, n - jc);
+    var jc: usize = jc0;
+    while (jc < jc1) : (jc += NC) {
+        const nc_cur = @min(NC, jc1 - jc);
 
         var pc: usize = 0;
         while (pc < k) : (pc += KC) {
