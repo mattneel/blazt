@@ -73,6 +73,17 @@ fn syrkOps(
     std.mem.doNotOptimizeAway(c.data[0]);
 }
 
+fn syr2kOps(
+    n: usize,
+    k: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b: blazt.Matrix(f32, .row_major),
+    c: *blazt.Matrix(f32, .row_major),
+) void {
+    blazt.ops.syr2k(f32, .row_major, .upper, .no_trans, n, k, 1.0, a, b, 0.0, c);
+    std.mem.doNotOptimizeAway(c.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -886,6 +897,44 @@ pub fn main() !void {
             syrk_p50, blazt.bench.gflops(syrk_flops, syrk_p50),
             syrk_p90, blazt.bench.gflops(syrk_flops, syrk_p90),
             syrk_p99, blazt.bench.gflops(syrk_flops, syrk_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // SYR2K (rank-2k update) bench (row_major, upper, no_trans).
+    const n_syr2k: usize = 1024;
+    const k_syr2k: usize = 256;
+    var a_syr2k = try blazt.Matrix(f32, .row_major).init(alloc, n_syr2k, k_syr2k);
+    defer a_syr2k.deinit();
+    var b_syr2k = try blazt.Matrix(f32, .row_major).init(alloc, n_syr2k, k_syr2k);
+    defer b_syr2k.deinit();
+    var c_syr2k = try blazt.Matrix(f32, .row_major).init(alloc, n_syr2k, n_syr2k);
+    defer c_syr2k.deinit();
+
+    for (a_syr2k.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 3) % 1024)))) * @as(f32, 0.001);
+    for (b_syr2k.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 11) % 1024)))) * @as(f32, 0.0011);
+    for (c_syr2k.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 17) % 1024)))) * @as(f32, 0.002);
+
+    var res_syr2k = try blazt.bench.run(alloc, "ops.syr2k(f32,row_major,upper)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, syr2kOps, .{ n_syr2k, k_syr2k, a_syr2k, b_syr2k, &c_syr2k });
+    defer res_syr2k.deinit();
+    res_syr2k.sortInPlace();
+    const syr2k_p50 = blazt.bench.medianSortedNs(res_syr2k.samples_ns);
+    const syr2k_p90 = blazt.bench.percentileSortedNs(res_syr2k.samples_ns, 0.90);
+    const syr2k_p99 = blazt.bench.percentileSortedNs(res_syr2k.samples_ns, 0.99);
+
+    // SYR2K flops: 2 terms, each 2*k * (n*(n+1)/2) = 2*k*n*(n+1)
+    const syr2k_flops: u64 = @intCast(@as(u64, 2) * @as(u64, k_syr2k) * @as(u64, n_syr2k) * @as(u64, n_syr2k + 1));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_syr2k.name,
+            syr2k_p50, blazt.bench.gflops(syr2k_flops, syr2k_p50),
+            syr2k_p90, blazt.bench.gflops(syr2k_flops, syr2k_p90),
+            syr2k_p99, blazt.bench.gflops(syr2k_flops, syr2k_p99),
         },
     );
     try out_gemm.flush();

@@ -1278,6 +1278,43 @@ pub const ops = struct {
     /// - `C` is `n×n`.
     /// - If `trans == .no_trans`, `A` is `n×k`; otherwise `A` is `k×n` and `op(A)=A^T`.
     /// - Only the triangle indicated by `uplo` is updated; the other triangle is left unchanged.
+    fn scaleTriangleInPlace(
+        comptime T: type,
+        comptime layout: matrix.Layout,
+        uplo: types.UpLo,
+        n: usize,
+        beta: T,
+        c: *matrix.Matrix(T, layout),
+    ) void {
+        if (beta == @as(T, 1)) return;
+        const beta_is_zero = (beta == @as(T, 0));
+
+        switch (uplo) {
+            .upper => {
+                for (0..n) |j| {
+                    for (0..j + 1) |i| {
+                        if (beta_is_zero) {
+                            c.atPtr(i, j).* = @as(T, 0);
+                        } else {
+                            c.atPtr(i, j).* *= beta;
+                        }
+                    }
+                }
+            },
+            .lower => {
+                for (0..n) |j| {
+                    for (j..n) |i| {
+                        if (beta_is_zero) {
+                            c.atPtr(i, j).* = @as(T, 0);
+                        } else {
+                            c.atPtr(i, j).* *= beta;
+                        }
+                    }
+                }
+            },
+        }
+    }
+
     pub fn syrk(
         comptime T: type,
         comptime layout: matrix.Layout,
@@ -1312,47 +1349,9 @@ pub const ops = struct {
 
         if (n == 0) return;
 
-        const scaleTriangle = struct {
-            fn f(
-                comptime TT: type,
-                comptime l: matrix.Layout,
-                ul: types.UpLo,
-                nn: usize,
-                b: TT,
-                cc: *matrix.Matrix(TT, l),
-            ) void {
-                if (b == @as(TT, 1)) return;
-                const is_zero = b == @as(TT, 0);
-                switch (ul) {
-                    .upper => {
-                        for (0..nn) |j| {
-                            for (0..j + 1) |i| {
-                                if (is_zero) {
-                                    cc.atPtr(i, j).* = @as(TT, 0);
-                                } else {
-                                    cc.atPtr(i, j).* *= b;
-                                }
-                            }
-                        }
-                    },
-                    .lower => {
-                        for (0..nn) |j| {
-                            for (j..nn) |i| {
-                                if (is_zero) {
-                                    cc.atPtr(i, j).* = @as(TT, 0);
-                                } else {
-                                    cc.atPtr(i, j).* *= b;
-                                }
-                            }
-                        }
-                    },
-                }
-            }
-        }.f;
-
         if (k == 0 or alpha == @as(T, 0)) {
             // Only scale the referenced triangle.
-            scaleTriangle(T, layout, uplo, n, beta, c);
+            scaleTriangleInPlace(T, layout, uplo, n, beta, c);
             return;
         }
 
@@ -1542,6 +1541,416 @@ pub const ops = struct {
                     }
                 }
             }
+        }
+    }
+
+    fn triGemmUpdateColMajorSquare(
+        comptime T: type,
+        uplo: types.UpLo,
+        n: usize,
+        k: usize,
+        alpha: T,
+        comptime layout_a: matrix.Layout,
+        a: matrix.Matrix(T, layout_a), // n×k
+        comptime layout_b: matrix.Layout,
+        b: matrix.Matrix(T, layout_b), // k×n
+        beta: T,
+        c: *matrix.Matrix(T, .col_major), // n×n
+    ) void {
+        std.debug.assert(n == c.rows);
+        std.debug.assert(n == c.cols);
+        std.debug.assert(a.rows == n);
+        std.debug.assert(a.cols == k);
+        std.debug.assert(b.rows == k);
+        std.debug.assert(b.cols == n);
+
+        const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
+        const MR: usize = P.MR;
+        const NR: usize = P.NR;
+        const KC: usize = P.KC;
+        const MC: usize = P.MC;
+        const NC: usize = P.NC;
+
+        var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+        var pack_b: [P.NR * P.KC]T align(memory.CacheLine) = undefined;
+
+        const rs_c: usize = 1;
+        const cs_c: usize = c.stride;
+
+        var jc: usize = 0;
+        while (jc < n) : (jc += NC) {
+            const nc_cur = @min(NC, n - jc);
+
+            var pc: usize = 0;
+            while (pc < k) : (pc += KC) {
+                const kc_cur = @min(KC, k - pc);
+                const beta_block: T = if (pc == 0) beta else @as(T, 1);
+
+                var jr: usize = 0;
+                while (jr < nc_cur) : (jr += NR) {
+                    const nr_cur = @min(NR, nc_cur - jr);
+                    const col0 = jc + jr;
+
+                    const pb = pack_b[0 .. NR * kc_cur];
+                    gemm_mod.packB(T, layout_b, NR, kc_cur, nr_cur, b, pc, col0, pb);
+
+                    var ic: usize = 0;
+                    while (ic < n) : (ic += MC) {
+                        if (uplo == .upper and ic >= jc + nc_cur) break;
+
+                        const mc_cur = @min(MC, n - ic);
+
+                        var ir: usize = 0;
+                        while (ir < mc_cur) : (ir += MR) {
+                            const mr_cur = @min(MR, mc_cur - ir);
+                            const row0 = ic + ir;
+
+                            const fully_above = (row0 + mr_cur <= col0);
+                            const fully_below = (row0 >= col0 + nr_cur);
+                            const do_full: bool = switch (uplo) {
+                                .upper => fully_above,
+                                .lower => fully_below,
+                            };
+                            const do_skip: bool = switch (uplo) {
+                                .upper => fully_below,
+                                .lower => fully_above,
+                            };
+                            if (do_skip) continue;
+
+                            const pa = pack_a[0 .. MR * kc_cur];
+                            gemm_mod.packA(T, layout_a, MR, kc_cur, mr_cur, a, row0, pc, pa);
+
+                            if (do_full) {
+                                const c_ptr: [*]T = c.data[col0 * c.stride + row0 ..].ptr;
+                                gemm_mod.microKernelPartial(
+                                    T,
+                                    MR,
+                                    NR,
+                                    kc_cur,
+                                    pa.ptr,
+                                    pb.ptr,
+                                    c_ptr,
+                                    rs_c,
+                                    cs_c,
+                                    alpha,
+                                    beta_block,
+                                    mr_cur,
+                                    nr_cur,
+                                );
+                                continue;
+                            }
+
+                            var tmp: [MR * NR]T = undefined;
+                            for (0..nr_cur) |jj| {
+                                for (0..mr_cur) |ii| {
+                                    tmp[jj * MR + ii] = c.data[(col0 + jj) * c.stride + (row0 + ii)];
+                                }
+                            }
+
+                            gemm_mod.microKernelPartial(
+                                T,
+                                MR,
+                                NR,
+                                kc_cur,
+                                pa.ptr,
+                                pb.ptr,
+                                tmp[0..].ptr,
+                                1,
+                                MR,
+                                alpha,
+                                beta_block,
+                                mr_cur,
+                                nr_cur,
+                            );
+
+                            for (0..nr_cur) |jj| {
+                                for (0..mr_cur) |ii| {
+                                    const gi = row0 + ii;
+                                    const gj = col0 + jj;
+                                    const keep = switch (uplo) {
+                                        .upper => gi <= gj,
+                                        .lower => gi >= gj,
+                                    };
+                                    if (keep) {
+                                        c.data[gj * c.stride + gi] = tmp[jj * MR + ii];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn syr2kColMajor(
+        comptime T: type,
+        uplo: types.UpLo,
+        trans_eff: types.Trans, // .no_trans or .trans
+        n: usize,
+        k: usize,
+        alpha: T,
+        a: matrix.Matrix(T, .col_major),
+        b: matrix.Matrix(T, .col_major),
+        beta: T,
+        c: *matrix.Matrix(T, .col_major),
+    ) void {
+        std.debug.assert(n == c.rows);
+        std.debug.assert(n == c.cols);
+
+        // Whole-matrix transpose views (alignment preserved).
+        const a_t: matrix.Matrix(T, .row_major) = .{
+            .data = a.data,
+            .rows = a.cols,
+            .cols = a.rows,
+            .stride = a.stride,
+            .allocator = a.allocator,
+        };
+        const b_t: matrix.Matrix(T, .row_major) = .{
+            .data = b.data,
+            .rows = b.cols,
+            .cols = b.rows,
+            .stride = b.stride,
+            .allocator = b.allocator,
+        };
+
+        if (trans_eff == .no_trans) {
+            // A,B are n×k.
+            triGemmUpdateColMajorSquare(T, uplo, n, k, alpha, .col_major, a, .row_major, b_t, beta, c);
+            triGemmUpdateColMajorSquare(T, uplo, n, k, alpha, .col_major, b, .row_major, a_t, @as(T, 1), c);
+        } else {
+            // A,B are k×n; op(A)=A^T and op(B)=B^T.
+            triGemmUpdateColMajorSquare(T, uplo, n, k, alpha, .row_major, a_t, .col_major, b, beta, c);
+            triGemmUpdateColMajorSquare(T, uplo, n, k, alpha, .row_major, b_t, .col_major, a, @as(T, 1), c);
+        }
+    }
+
+    /// Symmetric rank-2k update: `C := alpha*op(A)*op(B)^T + alpha*op(B)*op(A)^T + beta*C`.
+    ///
+    /// - `C` is `n×n`.
+    /// - If `trans == .no_trans`, `A` and `B` are `n×k`; otherwise `A` and `B` are `k×n` and `op(X)=X^T`.
+    /// - Only the triangle indicated by `uplo` is updated; the other triangle is left unchanged.
+    pub fn syr2k(
+        comptime T: type,
+        comptime layout: matrix.Layout,
+        uplo: types.UpLo,
+        trans: types.Trans,
+        n: usize,
+        k: usize,
+        alpha: T,
+        a: matrix.Matrix(T, layout),
+        b: matrix.Matrix(T, layout),
+        beta: T,
+        c: *matrix.Matrix(T, layout),
+    ) void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.syr2k currently only supports floating-point types");
+        }
+
+        const eff_trans: types.Trans = switch (trans) {
+            .no_trans => .no_trans,
+            .trans, .conj_trans => .trans,
+        };
+
+        std.debug.assert(n == c.rows);
+        std.debug.assert(n == c.cols);
+        if (eff_trans == .no_trans) {
+            std.debug.assert(a.rows == n and a.cols == k);
+            std.debug.assert(b.rows == n and b.cols == k);
+        } else {
+            std.debug.assert(a.rows == k and a.cols == n);
+            std.debug.assert(b.rows == k and b.cols == n);
+        }
+
+        if (n == 0) return;
+
+        if (k == 0 or alpha == @as(T, 0)) {
+            scaleTriangleInPlace(T, layout, uplo, n, beta, c);
+            return;
+        }
+
+        const flipUpLo: types.UpLo = switch (uplo) {
+            .upper => .lower,
+            .lower => .upper,
+        };
+        const flipTrans: types.Trans = if (eff_trans == .no_trans) .trans else .no_trans;
+
+        switch (layout) {
+            .col_major => syr2kColMajor(T, uplo, eff_trans, n, k, alpha, a, b, beta, c),
+            .row_major => {
+                const a_t: matrix.Matrix(T, .col_major) = .{
+                    .data = a.data,
+                    .rows = a.cols,
+                    .cols = a.rows,
+                    .stride = a.stride,
+                    .allocator = a.allocator,
+                };
+                const b_t: matrix.Matrix(T, .col_major) = .{
+                    .data = b.data,
+                    .rows = b.cols,
+                    .cols = b.rows,
+                    .stride = b.stride,
+                    .allocator = b.allocator,
+                };
+                var c_t: matrix.Matrix(T, .col_major) = .{
+                    .data = c.data,
+                    .rows = c.cols,
+                    .cols = c.rows,
+                    .stride = c.stride,
+                    .allocator = c.allocator,
+                };
+                syr2kColMajor(T, flipUpLo, flipTrans, n, k, alpha, a_t, b_t, beta, &c_t);
+            },
+        }
+    }
+
+    /// Hermitian rank-2k update: `C := alpha*op(A)*op(B)^H + conj(alpha)*op(B)*op(A)^H + beta*C`.
+    ///
+    /// - `C` is `n×n` Hermitian; only the triangle `uplo` is updated.
+    /// - `beta` is real (BLAS-compatible). `alpha` is complex.
+    /// - `trans` is `.no_trans` (A,B are `n×k`) or `.conj_trans` (A,B are `k×n`). `.trans` is treated as `.conj_trans`.
+    /// - Diagonal elements are forced real (imag part set to 0).
+    pub fn her2k(
+        comptime C: type,
+        comptime layout: matrix.Layout,
+        uplo: types.UpLo,
+        trans: types.Trans,
+        n: usize,
+        k: usize,
+        alpha: C,
+        a: matrix.Matrix(C, layout),
+        b: matrix.Matrix(C, layout),
+        beta: @TypeOf(@as(C, undefined).re),
+        c: *matrix.Matrix(C, layout),
+    ) void {
+        if (!@hasDecl(C, "init") or !@hasDecl(C, "add") or !@hasDecl(C, "mul") or !@hasDecl(C, "conjugate")) {
+            @compileError("ops.her2k expects a std.math.Complex(T) type");
+        }
+        if (!@hasField(C, "re") or !@hasField(C, "im")) {
+            @compileError("ops.her2k expects a std.math.Complex(T) type");
+        }
+
+        const R = @TypeOf(@as(C, undefined).re);
+        const zero: C = C.init(@as(R, 0), @as(R, 0));
+        const beta_c: C = C.init(beta, @as(R, 0));
+        const alpha_conj: C = alpha.conjugate();
+
+        const eff_trans: types.Trans = switch (trans) {
+            .no_trans => .no_trans,
+            .conj_trans, .trans => .conj_trans,
+        };
+
+        std.debug.assert(n == c.rows);
+        std.debug.assert(n == c.cols);
+        if (eff_trans == .no_trans) {
+            std.debug.assert(a.rows == n and a.cols == k);
+            std.debug.assert(b.rows == n and b.cols == k);
+        } else {
+            std.debug.assert(a.rows == k and a.cols == n);
+            std.debug.assert(b.rows == k and b.cols == n);
+        }
+
+        if (n == 0) return;
+
+        const aAt = struct {
+            inline fn f(mat: matrix.Matrix(C, layout), i: usize, j: usize) C {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const cAtPtr = struct {
+            inline fn f(mat: *matrix.Matrix(C, layout), i: usize, j: usize) *C {
+                return switch (layout) {
+                    .row_major => &mat.data[i * mat.stride + j],
+                    .col_major => &mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+
+        const alpha_is_zero = (alpha.re == @as(R, 0)) and (alpha.im == @as(R, 0));
+        if (k == 0 or alpha_is_zero) {
+            if (beta == @as(R, 1)) return;
+            const beta_is_zero = beta == @as(R, 0);
+            switch (uplo) {
+                .upper => for (0..n) |j| for (0..j + 1) |i| {
+                    const p = cAtPtr(c, i, j);
+                    if (beta_is_zero) {
+                        p.* = if (i == j) C.init(@as(R, 0), @as(R, 0)) else zero;
+                    } else {
+                        p.* = p.*.mul(beta_c);
+                        if (i == j) p.* = C.init(p.*.re, @as(R, 0));
+                    }
+                },
+                .lower => for (0..n) |j| for (j..n) |i| {
+                    const p = cAtPtr(c, i, j);
+                    if (beta_is_zero) {
+                        p.* = if (i == j) C.init(@as(R, 0), @as(R, 0)) else zero;
+                    } else {
+                        p.* = p.*.mul(beta_c);
+                        if (i == j) p.* = C.init(p.*.re, @as(R, 0));
+                    }
+                },
+            }
+            return;
+        }
+
+        const beta_is_zero = beta == @as(R, 0);
+
+        switch (uplo) {
+            .upper => {
+                for (0..n) |j| {
+                    for (0..j + 1) |i| {
+                        var sum1: C = zero;
+                        var sum2: C = zero;
+                        if (eff_trans == .no_trans) {
+                            // sum1 = Σ_p A[i,p] * conj(B[j,p])
+                            // sum2 = Σ_p B[i,p] * conj(A[j,p])
+                            for (0..k) |p| {
+                                sum1 = sum1.add(aAt(a, i, p).mul(aAt(b, j, p).conjugate()));
+                                sum2 = sum2.add(aAt(b, i, p).mul(aAt(a, j, p).conjugate()));
+                            }
+                        } else {
+                            // sum1 = Σ_p conj(A[p,i]) * B[p,j]
+                            // sum2 = Σ_p conj(B[p,i]) * A[p,j]
+                            for (0..k) |p| {
+                                sum1 = sum1.add(aAt(a, p, i).conjugate().mul(aAt(b, p, j)));
+                                sum2 = sum2.add(aAt(b, p, i).conjugate().mul(aAt(a, p, j)));
+                            }
+                        }
+
+                        const cp = cAtPtr(c, i, j);
+                        var out: C = alpha.mul(sum1).add(alpha_conj.mul(sum2));
+                        if (!beta_is_zero) out = out.add(cp.*.mul(beta_c));
+                        cp.* = if (i == j) C.init(out.re, @as(R, 0)) else out;
+                    }
+                }
+            },
+            .lower => {
+                for (0..n) |j| {
+                    for (j..n) |i| {
+                        var sum1: C = zero;
+                        var sum2: C = zero;
+                        if (eff_trans == .no_trans) {
+                            for (0..k) |p| {
+                                sum1 = sum1.add(aAt(a, i, p).mul(aAt(b, j, p).conjugate()));
+                                sum2 = sum2.add(aAt(b, i, p).mul(aAt(a, j, p).conjugate()));
+                            }
+                        } else {
+                            for (0..k) |p| {
+                                sum1 = sum1.add(aAt(a, p, i).conjugate().mul(aAt(b, p, j)));
+                                sum2 = sum2.add(aAt(b, p, i).conjugate().mul(aAt(a, p, j)));
+                            }
+                        }
+
+                        const cp = cAtPtr(c, i, j);
+                        var out: C = alpha.mul(sum1).add(alpha_conj.mul(sum2));
+                        if (!beta_is_zero) out = out.add(cp.*.mul(beta_c));
+                        cp.* = if (i == j) C.init(out.re, @as(R, 0)) else out;
+                    }
+                }
+            },
         }
     }
 
