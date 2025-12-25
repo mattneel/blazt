@@ -31,6 +31,7 @@ comptime {
     _ = @import("gemm_ops_test.zig");
     _ = @import("gemm_kernel_variant_test.zig");
     _ = @import("parallel_gemm_test.zig");
+    _ = @import("gemm_oracle_parity_test.zig");
 }
 
 test {
