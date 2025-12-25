@@ -157,6 +157,70 @@ fn swapOps(n: usize, x: []f32, y: []f32) void {
     std.mem.doNotOptimizeAway(y[0]);
 }
 
+fn hotSumU64(x: []const u64) u64 {
+    var sum: u64 = 0;
+    for (x) |v| sum +%= v;
+    std.mem.doNotOptimizeAway(sum);
+    return sum;
+}
+
+fn benchCacheHotAfterZero(allocator: std.mem.Allocator, out: anytype) !void {
+    // Cache pollution proxy: time a "hot" working set after a large write-only zeroing pass.
+    // Compare runs with/without `-Dnt_stores=true`.
+    //
+    // The zeroing is executed before the timer starts, so the sample measures only the hot loop.
+    const big_bytes: usize = 64 * 1024 * 1024; // 64 MiB
+    const hot_bytes: usize = 8 * 1024 * 1024; // 8 MiB
+    const hot_len: usize = hot_bytes / @sizeOf(u64);
+
+    const y = try blazt.allocAligned(allocator, u8, big_bytes);
+    defer allocator.free(y);
+    const hot = try allocator.alloc(u64, hot_len);
+    defer allocator.free(hot);
+
+    @memset(y, 0xAA);
+    for (hot, 0..) |*v, i| v.* = @as(u64, @intCast(i)) *% 0x9e3779b97f4a7c15;
+
+    // Warm hot set into cache.
+    _ = hotSumU64(hot);
+
+    var timer = try std.time.Timer.start();
+
+    const samples: usize = 20;
+    var base_ns: [samples]u64 = undefined;
+    var after_ns: [samples]u64 = undefined;
+
+    // Baseline hot set timing.
+    for (&base_ns) |*t| {
+        timer.reset();
+        _ = hotSumU64(hot);
+        t.* = timer.read();
+    }
+
+    // Hot set timing immediately after a large zeroing write.
+    for (&after_ns) |*t| {
+        blazt.memory.memsetZeroBytes(y);
+        timer.reset();
+        _ = hotSumU64(hot);
+        t.* = timer.read();
+    }
+
+    blazt.bench.sortNs(base_ns[0..]);
+    blazt.bench.sortNs(after_ns[0..]);
+    const base_p50 = blazt.bench.medianSortedNs(base_ns[0..]);
+    const after_p50 = blazt.bench.medianSortedNs(after_ns[0..]);
+
+    const ratio: f64 = if (base_p50 == 0)
+        std.math.inf(f64)
+    else
+        @as(f64, @floatFromInt(after_p50)) / @as(f64, @floatFromInt(base_p50));
+
+    try out.print(
+        "bench cache_hot_after_zero (nt_stores={})\n  big_zero: {d} bytes\n  hot: {d} bytes\n  hot_p50: {d} ns\n  hot_after_zero_p50: {d} ns\n  ratio: {d:.3}\n",
+        .{ blazt.build_options.nt_stores, big_bytes, hot_bytes, base_p50, after_p50, ratio },
+    );
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -954,6 +1018,9 @@ pub fn main() !void {
         );
         try out_gemm.flush();
     }
+
+    try benchCacheHotAfterZero(alloc, out_gemm);
+    try out_gemm.flush();
 }
 
 

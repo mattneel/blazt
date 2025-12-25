@@ -1,5 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const cpu_cache = @import("cpu_cache");
+
+extern fn blazt_nt_memset_zero(dst: [*]u8, n: usize) callconv(.c) void;
 
 fn sanitizeCacheLineBytes(comptime line_bytes: usize) usize {
     const min_line: usize = std.atomic.cache_line;
@@ -10,6 +14,20 @@ fn sanitizeCacheLineBytes(comptime line_bytes: usize) usize {
 }
 
 pub const CacheLine: usize = sanitizeCacheLineBytes(cpu_cache.l1d_line_bytes);
+
+/// Zero a byte slice, optionally using non-temporal (streaming) stores when enabled.
+pub fn memsetZeroBytes(bytes: []u8) void {
+    if (bytes.len == 0) return;
+
+    if (comptime build_options.nt_stores and builtin.cpu.arch == .x86_64) {
+        if (bytes.len >= build_options.nt_store_min_bytes and (@intFromPtr(bytes.ptr) % 16) == 0) {
+            blazt_nt_memset_zero(@ptrCast(bytes.ptr), bytes.len);
+            return;
+        }
+    }
+
+    @memset(bytes, 0);
+}
 
 pub fn allocAligned(
     allocator: std.mem.Allocator,

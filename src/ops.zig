@@ -1,10 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const matrix = @import("matrix.zig");
 const errors = @import("errors.zig");
 const simd = @import("simd.zig");
 const gemm_mod = @import("gemm.zig");
 const memory = @import("memory.zig");
+const build_options = @import("build_options");
+
+extern fn blazt_nt_memcpy(dst: [*]u8, src: [*]const u8, n: usize) callconv(.c) void;
 
 pub const ops = struct {
     // Level 1 (stubs; implemented incrementally)
@@ -34,8 +38,37 @@ pub const ops = struct {
         if (overlap and dst_addr > src_addr) {
             std.mem.copyBackwards(T, dst, src);
         } else {
+            if (comptime build_options.nt_stores and builtin.cpu.arch == .x86_64) {
+                if (!overlap and bytes >= build_options.nt_store_min_bytes) {
+                    if (copyNonTemporalBytes(T, dst_addr, src, dst)) return;
+                }
+            }
             std.mem.copyForwards(T, dst, src);
         }
+    }
+
+    /// Attempt a non-temporal (streaming) forward copy for **non-overlapping** ranges.
+    ///
+    /// Returns `true` if the copy was performed using non-temporal stores, `false` if the caller
+    /// should fall back to a regular copy.
+    fn copyNonTemporalBytes(comptime T: type, dst_addr: usize, src: []const T, dst: []T) bool {
+        // Only bother for trivially bit-copyable types (same policy as memcopy).
+        if (comptime !std.meta.hasUniqueRepresentation(T)) return false;
+
+        // Stream stores operate on bytes.
+        const byte_len: usize = std.math.mul(usize, src.len, @sizeOf(T)) catch return false;
+        if (byte_len == 0) return true;
+
+        const src_bytes: [*]const u8 = @ptrCast(src.ptr);
+        const dst_bytes: [*]u8 = @ptrCast(dst.ptr);
+
+        // Our x86 implementation stream-stores 16B chunks; require 16B alignment to be safe.
+        const align_bytes: usize = 16;
+        if ((@intFromPtr(src_bytes) % align_bytes) != 0) return false;
+        if ((dst_addr % align_bytes) != 0) return false;
+
+        blazt_nt_memcpy(dst_bytes, src_bytes, byte_len);
+        return true;
     }
 
     /// Scale `n` elements of `x` in-place: `x[i] = alpha * x[i]`.
@@ -989,13 +1022,13 @@ pub const ops = struct {
                     .row_major => {
                         for (0..m) |i| {
                             const row_off = i * c.stride;
-                            @memset(c.data[row_off .. row_off + n], @as(T, 0));
+                            memory.memsetZeroBytes(std.mem.sliceAsBytes(c.data[row_off .. row_off + n]));
                         }
                     },
                     .col_major => {
                         for (0..n) |j| {
                             const col_off = j * c.stride;
-                            for (0..m) |i| c.data[col_off + i] = @as(T, 0);
+                            memory.memsetZeroBytes(std.mem.sliceAsBytes(c.data[col_off .. col_off + m]));
                         }
                     },
                 }

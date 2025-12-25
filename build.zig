@@ -49,12 +49,24 @@ pub fn build(b: *std.Build) void {
     const gemm_prefetch_b_k_opt = b.option(usize, "gemm_prefetch_b_k", "Prefetch distance (in k-iterations) for packed B panels; 0=auto") orelse 0;
     const gemm_prefetch_locality_opt = b.option(u2, "gemm_prefetch_locality", "Prefetch locality hint (0-3)") orelse 3;
 
+    // Optional non-temporal (streaming) stores.
+    const nt_stores_opt = b.option(bool, "nt_stores", "Enable non-temporal (streaming) stores in eligible write-only paths") orelse false;
+    const nt_store_min_bytes_opt = b.option(usize, "nt_store_min_bytes", "Minimum byte count to enable non-temporal stores (when nt_stores=true)") orelse (512 * 1024);
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "gemm_prefetch", gemm_prefetch_opt);
     build_options.addOption(usize, "gemm_prefetch_a_k", gemm_prefetch_a_k_opt);
     build_options.addOption(usize, "gemm_prefetch_b_k", gemm_prefetch_b_k_opt);
     build_options.addOption(u2, "gemm_prefetch_locality", gemm_prefetch_locality_opt);
+    build_options.addOption(bool, "nt_stores", nt_stores_opt);
+    build_options.addOption(usize, "nt_store_min_bytes", nt_store_min_bytes_opt);
     mod.addOptions("build_options", build_options);
+
+    // Optional non-temporal store helper (small C shim for x86).
+    mod.addCSourceFile(.{
+        .file = b.path("src/nt_stores.c"),
+        .flags = &.{},
+    });
 
     // Build-time CPU cache probing (native targets only).
     //

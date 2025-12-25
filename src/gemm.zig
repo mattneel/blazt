@@ -372,7 +372,7 @@ pub fn gemmBlockedRange(
             // Zero only the selected column range.
             for (jc0..jc1) |j| {
                 const col_off = j * c.stride;
-                for (0..m) |i| c.data[col_off + i] = @as(T, 0);
+                memory.memsetZeroBytes(std.mem.sliceAsBytes(c.data[col_off .. col_off + m]));
             }
         } else if (beta != @as(T, 1)) {
             // Scale only the selected column range.

@@ -33,6 +33,9 @@ pub const gemm = @import("gemm.zig");
 pub const bench = @import("bench.zig");
 pub const oracle = @import("oracle.zig");
 
+/// Generated build-time configuration knobs (from `build.zig`).
+pub const build_options = @import("build_options");
+
 pub const thread_pool = @import("thread_pool.zig");
 pub const ThreadPool = thread_pool.ThreadPool;
 

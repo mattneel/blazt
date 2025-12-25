@@ -33,6 +33,7 @@ comptime {
     _ = @import("gemm_builder_test.zig");
     _ = @import("parallel_gemm_test.zig");
     _ = @import("gemm_oracle_parity_test.zig");
+    _ = @import("nt_stores_test.zig");
 }
 
 test {
