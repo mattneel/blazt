@@ -767,6 +767,396 @@ pub const ops = struct {
         }
     }
 
+    /// Triangular matrix-matrix multiply (in-place): `B := alpha * op(A) * B` or `B := alpha * B * op(A)`.
+    ///
+    /// - `side == .left`:  `B` is `m×n`, `A` is `m×m`
+    /// - `side == .right`: `B` is `m×n`, `A` is `n×n`
+    /// - `A` is triangular per `uplo`
+    /// - `diag == .unit` treats diagonal as 1 (diagonal elements are not read)
+    /// - `trans == .conj_trans` is treated as `.trans` for real types
+    pub fn trmm(
+        comptime T: type,
+        comptime layout: matrix.Layout,
+        side: types.Side,
+        uplo: types.UpLo,
+        trans: types.Trans,
+        diag: types.Diag,
+        m: usize,
+        n: usize,
+        alpha: T,
+        a: matrix.Matrix(T, layout),
+        b: *matrix.Matrix(T, layout),
+    ) void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.trmm currently only supports floating-point types");
+        }
+
+        std.debug.assert(m == b.rows);
+        std.debug.assert(n == b.cols);
+
+        switch (layout) {
+            .row_major => {
+                std.debug.assert(a.stride >= a.cols);
+                std.debug.assert(b.stride >= b.cols);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.rows - 1) * a.stride + a.cols <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.rows - 1) * b.stride + b.cols <= b.data.len);
+            },
+            .col_major => {
+                std.debug.assert(a.stride >= a.rows);
+                std.debug.assert(b.stride >= b.rows);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.cols - 1) * a.stride + a.rows <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.cols - 1) * b.stride + b.rows <= b.data.len);
+            },
+        }
+
+        switch (side) {
+            .left => {
+                std.debug.assert(a.rows == m and a.cols == m);
+            },
+            .right => {
+                std.debug.assert(a.rows == n and a.cols == n);
+            },
+        }
+
+        if (m == 0 or n == 0) return;
+
+        // alpha==0 => B := 0 (avoid reading A or B)
+        if (alpha == @as(T, 0)) {
+            switch (layout) {
+                .row_major => {
+                    for (0..m) |i| {
+                        const off = i * b.stride;
+                        memory.memsetZeroBytes(std.mem.sliceAsBytes(b.data[off .. off + n]));
+                    }
+                },
+                .col_major => {
+                    for (0..n) |j| {
+                        const off = j * b.stride;
+                        memory.memsetZeroBytes(std.mem.sliceAsBytes(b.data[off .. off + m]));
+                    }
+                },
+            }
+            return;
+        }
+
+        const eff_trans: types.Trans = switch (trans) {
+            .no_trans => .no_trans,
+            .trans, .conj_trans => .trans,
+        };
+        const op_uplo: types.UpLo = if (eff_trans == .no_trans)
+            uplo
+        else
+            switch (uplo) {
+                .upper => .lower,
+                .lower => .upper,
+            };
+
+        const aAt = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const aOp = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize, tr: types.Trans) T {
+                return if (tr == .no_trans) aAt(mat, i, j) else aAt(mat, j, i);
+            }
+        }.f;
+        const bAt = struct {
+            inline fn f(mat: *matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const bAtPtr = struct {
+            inline fn f(mat: *matrix.Matrix(T, layout), i: usize, j: usize) *T {
+                return switch (layout) {
+                    .row_major => &mat.data[i * mat.stride + j],
+                    .col_major => &mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+
+        switch (side) {
+            .left => {
+                // B := alpha * op(A) * B
+                for (0..n) |j| {
+                    switch (op_uplo) {
+                        .upper => {
+                            for (0..m) |i| {
+                                var tmp: T = if (diag == .unit) bAt(b, i, j) else aOp(a, i, i, eff_trans) * bAt(b, i, j);
+                                for (i + 1..m) |k| {
+                                    tmp += aOp(a, i, k, eff_trans) * bAt(b, k, j);
+                                }
+                                bAtPtr(b, i, j).* = alpha * tmp;
+                            }
+                        },
+                        .lower => {
+                            var ii: usize = m;
+                            while (ii != 0) {
+                                ii -= 1;
+                                const i = ii;
+                                var tmp: T = if (diag == .unit) bAt(b, i, j) else aOp(a, i, i, eff_trans) * bAt(b, i, j);
+                                var k: usize = 0;
+                                while (k < i) : (k += 1) {
+                                    tmp += aOp(a, i, k, eff_trans) * bAt(b, k, j);
+                                }
+                                bAtPtr(b, i, j).* = alpha * tmp;
+                            }
+                        },
+                    }
+                }
+            },
+            .right => {
+                // B := alpha * B * op(A)
+                for (0..m) |i| {
+                    switch (op_uplo) {
+                        .upper => {
+                            var jj: usize = n;
+                            while (jj != 0) {
+                                jj -= 1;
+                                const j = jj;
+                                var tmp: T = if (diag == .unit) bAt(b, i, j) else bAt(b, i, j) * aOp(a, j, j, eff_trans);
+                                var k: usize = 0;
+                                while (k < j) : (k += 1) {
+                                    tmp += bAt(b, i, k) * aOp(a, k, j, eff_trans);
+                                }
+                                bAtPtr(b, i, j).* = alpha * tmp;
+                            }
+                        },
+                        .lower => {
+                            for (0..n) |j| {
+                                var tmp: T = if (diag == .unit) bAt(b, i, j) else bAt(b, i, j) * aOp(a, j, j, eff_trans);
+                                for (j + 1..n) |k| {
+                                    tmp += bAt(b, i, k) * aOp(a, k, j, eff_trans);
+                                }
+                                bAtPtr(b, i, j).* = alpha * tmp;
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    }
+
+    /// Triangular solve with multiple RHS (in-place): solve `op(A) * X = alpha*B` or `X * op(A) = alpha*B`.
+    ///
+    /// - `side == .left`:  `B` is `m×n`, `A` is `m×m`, solves `op(A) * X = alpha*B`
+    /// - `side == .right`: `B` is `m×n`, `A` is `n×n`, solves `X * op(A) = alpha*B`
+    /// - `A` is triangular per `uplo`
+    /// - `diag == .unit` treats diagonal as 1 (diagonal elements are not read)
+    /// - If `diag == .non_unit` and a diagonal entry is 0, returns `error.Singular`.
+    /// - `trans == .conj_trans` is treated as `.trans` for real types
+    /// - If `alpha == 0`, sets `B := 0` and returns without checking singularity.
+    pub fn trsm(
+        comptime T: type,
+        comptime layout: matrix.Layout,
+        side: types.Side,
+        uplo: types.UpLo,
+        trans: types.Trans,
+        diag: types.Diag,
+        m: usize,
+        n: usize,
+        alpha: T,
+        a: matrix.Matrix(T, layout),
+        b: *matrix.Matrix(T, layout),
+    ) errors.TrsmError!void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.trsm currently only supports floating-point types");
+        }
+
+        std.debug.assert(m == b.rows);
+        std.debug.assert(n == b.cols);
+
+        switch (layout) {
+            .row_major => {
+                std.debug.assert(a.stride >= a.cols);
+                std.debug.assert(b.stride >= b.cols);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.rows - 1) * a.stride + a.cols <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.rows - 1) * b.stride + b.cols <= b.data.len);
+            },
+            .col_major => {
+                std.debug.assert(a.stride >= a.rows);
+                std.debug.assert(b.stride >= b.rows);
+                if (a.rows != 0 and a.cols != 0) std.debug.assert((a.cols - 1) * a.stride + a.rows <= a.data.len);
+                if (b.rows != 0 and b.cols != 0) std.debug.assert((b.cols - 1) * b.stride + b.rows <= b.data.len);
+            },
+        }
+
+        const a_dim: usize = switch (side) {
+            .left => m,
+            .right => n,
+        };
+        std.debug.assert(a.rows == a_dim and a.cols == a_dim);
+
+        if (m == 0 or n == 0) return;
+
+        // Scale B by alpha (alpha=0 avoids reading B).
+        if (alpha == @as(T, 0)) {
+            switch (layout) {
+                .row_major => {
+                    for (0..m) |i| {
+                        const off = i * b.stride;
+                        memory.memsetZeroBytes(std.mem.sliceAsBytes(b.data[off .. off + n]));
+                    }
+                },
+                .col_major => {
+                    for (0..n) |j| {
+                        const off = j * b.stride;
+                        memory.memsetZeroBytes(std.mem.sliceAsBytes(b.data[off .. off + m]));
+                    }
+                },
+            }
+            return;
+        } else if (alpha != @as(T, 1)) {
+            switch (layout) {
+                .row_major => {
+                    for (0..m) |i| {
+                        const off = i * b.stride;
+                        for (0..n) |j| b.data[off + j] *= alpha;
+                    }
+                },
+                .col_major => {
+                    for (0..n) |j| {
+                        const off = j * b.stride;
+                        for (0..m) |i| b.data[off + i] *= alpha;
+                    }
+                },
+            }
+        }
+
+        const eff_trans: types.Trans = switch (trans) {
+            .no_trans => .no_trans,
+            .trans, .conj_trans => .trans,
+        };
+        const op_uplo: types.UpLo = if (eff_trans == .no_trans)
+            uplo
+        else
+            switch (uplo) {
+                .upper => .lower,
+                .lower => .upper,
+            };
+
+        const aAt = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const aOp = struct {
+            inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize, tr: types.Trans) T {
+                return if (tr == .no_trans) aAt(mat, i, j) else aAt(mat, j, i);
+            }
+        }.f;
+        const bAt = struct {
+            inline fn f(mat: *matrix.Matrix(T, layout), i: usize, j: usize) T {
+                return switch (layout) {
+                    .row_major => mat.data[i * mat.stride + j],
+                    .col_major => mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+        const bAtPtr = struct {
+            inline fn f(mat: *matrix.Matrix(T, layout), i: usize, j: usize) *T {
+                return switch (layout) {
+                    .row_major => &mat.data[i * mat.stride + j],
+                    .col_major => &mat.data[j * mat.stride + i],
+                };
+            }
+        }.f;
+
+        switch (side) {
+            .left => {
+                // Solve op(A) * X = B, column by column.
+                for (0..n) |j| {
+                    switch (op_uplo) {
+                        .upper => {
+                            // Back substitution.
+                            var ii: usize = m;
+                            while (ii != 0) {
+                                ii -= 1;
+                                const i = ii;
+                                var tmp: T = bAt(b, i, j);
+                                for (i + 1..m) |k| {
+                                    tmp -= aOp(a, i, k, eff_trans) * bAt(b, k, j);
+                                }
+                                if (diag == .non_unit) {
+                                    const d = aOp(a, i, i, eff_trans);
+                                    if (d == @as(T, 0)) return error.Singular;
+                                    tmp /= d;
+                                }
+                                bAtPtr(b, i, j).* = tmp;
+                            }
+                        },
+                        .lower => {
+                            // Forward substitution.
+                            for (0..m) |i| {
+                                var tmp: T = bAt(b, i, j);
+                                var k: usize = 0;
+                                while (k < i) : (k += 1) {
+                                    tmp -= aOp(a, i, k, eff_trans) * bAt(b, k, j);
+                                }
+                                if (diag == .non_unit) {
+                                    const d = aOp(a, i, i, eff_trans);
+                                    if (d == @as(T, 0)) return error.Singular;
+                                    tmp /= d;
+                                }
+                                bAtPtr(b, i, j).* = tmp;
+                            }
+                        },
+                    }
+                }
+            },
+            .right => {
+                // Solve X * op(A) = B, row by row.
+                for (0..m) |i| {
+                    switch (op_uplo) {
+                        .upper => {
+                            // Forward substitution over columns.
+                            for (0..n) |j| {
+                                var tmp: T = bAt(b, i, j);
+                                var k: usize = 0;
+                                while (k < j) : (k += 1) {
+                                    tmp -= bAt(b, i, k) * aOp(a, k, j, eff_trans);
+                                }
+                                if (diag == .non_unit) {
+                                    const d = aOp(a, j, j, eff_trans);
+                                    if (d == @as(T, 0)) return error.Singular;
+                                    tmp /= d;
+                                }
+                                bAtPtr(b, i, j).* = tmp;
+                            }
+                        },
+                        .lower => {
+                            // Back substitution over columns.
+                            var jj: usize = n;
+                            while (jj != 0) {
+                                jj -= 1;
+                                const j = jj;
+                                var tmp: T = bAt(b, i, j);
+                                for (j + 1..n) |k| {
+                                    tmp -= bAt(b, i, k) * aOp(a, k, j, eff_trans);
+                                }
+                                if (diag == .non_unit) {
+                                    const d = aOp(a, j, j, eff_trans);
+                                    if (d == @as(T, 0)) return error.Singular;
+                                    tmp /= d;
+                                }
+                                bAtPtr(b, i, j).* = tmp;
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    }
+
     /// Symmetric matrix-vector multiply: `y := alpha*A*x + beta*y`.
     ///
     /// Only the triangle indicated by `uplo` is referenced; the other triangle is ignored.

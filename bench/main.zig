@@ -95,6 +95,32 @@ fn symmOps(
     std.mem.doNotOptimizeAway(c.data[0]);
 }
 
+fn trmmOps(
+    m: usize,
+    n: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b0: blazt.Matrix(f32, .row_major),
+    b: *blazt.Matrix(f32, .row_major),
+) void {
+    _ = .{ m, n };
+    @memcpy(b.data, b0.data);
+    blazt.ops.trmm(f32, .row_major, .left, .upper, .no_trans, .non_unit, b.rows, b.cols, 1.0, a, b);
+    std.mem.doNotOptimizeAway(b.data[0]);
+}
+
+fn trsmOps(
+    m: usize,
+    n: usize,
+    a: blazt.Matrix(f32, .row_major),
+    b0: blazt.Matrix(f32, .row_major),
+    b: *blazt.Matrix(f32, .row_major),
+) void {
+    _ = .{ m, n };
+    @memcpy(b.data, b0.data);
+    blazt.ops.trsm(f32, .row_major, .left, .upper, .no_trans, .non_unit, b.rows, b.cols, 1.0, a, b) catch unreachable;
+    std.mem.doNotOptimizeAway(b.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -993,6 +1019,81 @@ pub fn main() !void {
             symm_p50, blazt.bench.gflops(symm_flops, symm_p50),
             symm_p90, blazt.bench.gflops(symm_flops, symm_p90),
             symm_p99, blazt.bench.gflops(symm_flops, symm_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // TRMM/TRSM bench (row_major, side=left, upper, no_trans, non_unit).
+    const m_tr: usize = 1024;
+    const n_tr: usize = 256;
+    var a_tr = try blazt.Matrix(f32, .row_major).init(alloc, m_tr, m_tr);
+    defer a_tr.deinit();
+    var b0_tr = try blazt.Matrix(f32, .row_major).init(alloc, m_tr, n_tr);
+    defer b0_tr.deinit();
+    var b_tr = try blazt.Matrix(f32, .row_major).init(alloc, m_tr, n_tr);
+    defer b_tr.deinit();
+
+    // Upper triangular A with nonzero diagonal; lower triangle arbitrary.
+    for (0..m_tr) |j| {
+        for (0..m_tr) |i| {
+            if (i <= j) {
+                if (i == j) {
+                    a_tr.atPtr(i, j).* = 1.5;
+                } else {
+                    a_tr.atPtr(i, j).* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 37 + j * 17 + 11) % 1024)))) * @as(f32, 0.001);
+                }
+            } else {
+                a_tr.atPtr(i, j).* = 0.0;
+            }
+        }
+    }
+    for (b0_tr.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i + 5) % 1024)))) * @as(f32, 0.0013);
+    @memcpy(b_tr.data, b0_tr.data);
+
+    var res_trmm = try blazt.bench.run(alloc, "ops.trmm(f32,row_major,left,upper)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, trmmOps, .{ m_tr, n_tr, a_tr, b0_tr, &b_tr });
+    defer res_trmm.deinit();
+    res_trmm.sortInPlace();
+    const trmm_p50 = blazt.bench.medianSortedNs(res_trmm.samples_ns);
+    const trmm_p90 = blazt.bench.percentileSortedNs(res_trmm.samples_ns, 0.90);
+    const trmm_p99 = blazt.bench.percentileSortedNs(res_trmm.samples_ns, 0.99);
+
+    // TRMM flops (left): ~ n*m*(m+1)
+    const trmm_flops: u64 = @intCast(@as(u64, n_tr) * @as(u64, m_tr) * @as(u64, m_tr + 1));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_trmm.name,
+            trmm_p50, blazt.bench.gflops(trmm_flops, trmm_p50),
+            trmm_p90, blazt.bench.gflops(trmm_flops, trmm_p90),
+            trmm_p99, blazt.bench.gflops(trmm_flops, trmm_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    var res_trsm = try blazt.bench.run(alloc, "ops.trsm(f32,row_major,left,upper)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, trsmOps, .{ m_tr, n_tr, a_tr, b0_tr, &b_tr });
+    defer res_trsm.deinit();
+    res_trsm.sortInPlace();
+    const trsm_p50 = blazt.bench.medianSortedNs(res_trsm.samples_ns);
+    const trsm_p90 = blazt.bench.percentileSortedNs(res_trsm.samples_ns, 0.90);
+    const trsm_p99 = blazt.bench.percentileSortedNs(res_trsm.samples_ns, 0.99);
+
+    // TRSM flops (left): ~ m*m*n (multiply-add terms) (ignores divides)
+    const trsm_flops: u64 = @intCast(@as(u64, m_tr) * @as(u64, m_tr) * @as(u64, n_tr));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_trsm.name,
+            trsm_p50, blazt.bench.gflops(trsm_flops, trsm_p50),
+            trsm_p90, blazt.bench.gflops(trsm_flops, trsm_p90),
+            trsm_p99, blazt.bench.gflops(trsm_flops, trsm_p99),
         },
     );
     try out_gemm.flush();

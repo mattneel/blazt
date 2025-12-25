@@ -20,6 +20,7 @@ pub const errors = @import("errors.zig");
 pub const LuError = errors.LuError;
 pub const CholeskyError = errors.CholeskyError;
 pub const TrsvError = errors.TrsvError;
+pub const TrsmError = errors.TrsmError;
 
 pub const ops = @import("ops.zig").ops;
 pub const parallel = @import("parallel.zig").parallel;

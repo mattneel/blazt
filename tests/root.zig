@@ -38,6 +38,7 @@ comptime {
     _ = @import("sve_test.zig");
     _ = @import("syrk_herk_test.zig");
     _ = @import("symm_hemm_test.zig");
+    _ = @import("trmm_trsm_test.zig");
 }
 
 test {
