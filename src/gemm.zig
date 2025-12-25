@@ -27,6 +27,42 @@ pub const KernelVariant = enum {
     alpha_one_beta_one,
 };
 
+pub const GemmTuningPreset = enum {
+    /// Auto-select based on target CPU features.
+    auto,
+    /// Conservative baseline (cache-driven heuristics only).
+    generic,
+    /// x86 AVX2 (+FMA) tuned defaults.
+    avx2,
+    /// x86 AVX-512 tuned defaults.
+    avx512,
+    /// ARM NEON tuned defaults.
+    neon,
+};
+
+fn parseGemmTuningPreset(comptime s: []const u8) GemmTuningPreset {
+    if (std.mem.eql(u8, s, "auto")) return .auto;
+    if (std.mem.eql(u8, s, "generic")) return .generic;
+    if (std.mem.eql(u8, s, "avx2")) return .avx2;
+    if (std.mem.eql(u8, s, "avx512")) return .avx512;
+    if (std.mem.eql(u8, s, "neon")) return .neon;
+    @compileError(std.fmt.comptimePrint("unknown -Dgemm_tuning preset '{s}' (expected auto|generic|avx2|avx512|neon)", .{s}));
+}
+
+fn autoGemmTuningPreset(info: cpu.CpuInfo) GemmTuningPreset {
+    if (info.has_avx512f) return .avx512;
+    if (info.has_avx2 and info.has_fma) return .avx2;
+    if (info.has_neon) return .neon;
+    return .generic;
+}
+
+fn selectedGemmTuningPreset(comptime info: cpu.CpuInfo, comptime requested: GemmTuningPreset) GemmTuningPreset {
+    return switch (requested) {
+        .auto => autoGemmTuningPreset(info),
+        else => requested,
+    };
+}
+
 fn autoPrefetchDistanceK(comptime T: type, comptime elems_per_k: usize) usize {
     // Heuristic: prefetch ~2 cache lines ahead, expressed in k-iterations.
     const bytes_per_k: usize = elems_per_k * @sizeOf(T);
@@ -116,40 +152,83 @@ fn clamp(x: usize, lo: usize, hi: usize) usize {
 ///
 /// All returned values are **comptime-known** (no runtime dispatch).
 pub fn computeTileParams(comptime T: type) TileParams {
+    const requested = comptime parseGemmTuningPreset(build_options.gemm_tuning);
+    return computeTileParamsWithTuning(T, requested);
+}
+
+/// Compute tile parameters using an explicit tuning preset.
+///
+/// This is mainly intended for testing and benchmarking presets; `computeTileParams(T)` uses
+/// the build option `-Dgemm_tuning=...` (default: `auto`).
+pub fn computeTileParamsWithTuning(comptime T: type, comptime tuning: GemmTuningPreset) TileParams {
     if (comptime @typeInfo(T) != .float) {
         @compileError("computeTileParams only supports floating-point types");
     }
 
-    const info = cpu.CpuInfo.native();
+    // These values are comptime-known for the target (features from `builtin.cpu`, caches from
+    // build-time `cpu_cache`), but we must force comptime evaluation here so downstream selection
+    // (tuning preset) is also comptime.
+    const info = comptime cpu.CpuInfo.native();
     const vl_ci = simd.suggestVectorLength(T) orelse 1;
     const vl: usize = @intCast(vl_ci);
+
+    const preset: GemmTuningPreset = comptime selectedGemmTuningPreset(info, tuning);
 
     // Micro-kernel register block sizes.
     // Keep these conservative so we don't over-commit registers on unknown targets.
     const MR: usize = clamp(vl, 1, 16);
-    const NR: usize = switch (T) {
-        f32 => 4,
-        f64 => 4,
-        else => 2,
+    const NR: usize = switch (preset) {
+        .generic => switch (T) {
+            f32 => 4,
+            f64 => 4,
+            else => 2,
+        },
+        .avx2 => switch (T) {
+            // BLIS-like defaults (initial pass).
+            f32 => 6,
+            f64 => 4,
+            else => 2,
+        },
+        .avx512 => switch (T) {
+            f32 => 8,
+            f64 => 6,
+            else => 2,
+        },
+        .neon => switch (T) {
+            f32 => 4,
+            f64 => 4,
+            else => 2,
+        },
+        .auto => unreachable, // `selectedGemmTuningPreset` never returns .auto
     };
 
     const elt_bytes: usize = @sizeOf(T);
     const mrnr_bytes: usize = (MR + NR) * elt_bytes;
 
-    // KC: keep A(mr,kc)+B(kc,nr) within ~half L1D.
-    const l1_budget = info.l1d_size_bytes / 2;
+    // KC: keep A(mr,kc)+B(kc,nr) within ~half L1D (slightly more aggressive for known SIMD targets).
+    const l1_budget = switch (preset) {
+        .avx2, .avx512 => (info.l1d_size_bytes * 3) / 4,
+        .neon, .generic => info.l1d_size_bytes / 2,
+        .auto => unreachable,
+    };
     const kc_raw = if (mrnr_bytes == 0) 64 else l1_budget / mrnr_bytes;
     const KC = clamp(roundDownMultiple(@max(kc_raw, 64), 8), 64, 2048);
 
     // MC: keep packed A(MC,KC) within ~half L2.
     const l2_budget = info.l2_size_bytes / 2;
     const mc_raw = if (KC == 0) MR else l2_budget / (KC * elt_bytes);
-    const MC = clamp(roundDownMultiple(@max(mc_raw, MR), MR), MR, 4096);
+    const MC = blk: {
+        const hi = roundDownMultiple(4096, MR);
+        break :blk clamp(roundDownMultiple(@max(mc_raw, MR), MR), MR, hi);
+    };
 
     // NC: keep packed B(KC,NC) within ~half L3.
     const l3_budget = info.l3_size_bytes / 2;
     const nc_raw = if (KC == 0) NR else l3_budget / (KC * elt_bytes);
-    const NC = clamp(roundDownMultiple(@max(nc_raw, NR), NR), NR, 8192);
+    const NC = blk: {
+        const hi = roundDownMultiple(8192, NR);
+        break :blk clamp(roundDownMultiple(@max(nc_raw, NR), NR), NR, hi);
+    };
 
     // If NC ended up smaller than a single cache line of B-panel, round it up slightly.
     const min_nc = roundUpMultiple(NR * 4, NR);

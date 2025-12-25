@@ -25,6 +25,7 @@ comptime {
     _ = @import("symv_hemv_test.zig");
     _ = @import("blas2_oracle_parity_test.zig");
     _ = @import("gemm_tile_params_test.zig");
+    _ = @import("gemm_tuning_test.zig");
     _ = @import("gemm_microkernel_test.zig");
     _ = @import("gemm_pack_test.zig");
     _ = @import("gemm_macrokernel_test.zig");

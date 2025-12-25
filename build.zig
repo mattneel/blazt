@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
     const gemm_prefetch_a_k_opt = b.option(usize, "gemm_prefetch_a_k", "Prefetch distance (in k-iterations) for packed A panels; 0=auto") orelse 0;
     const gemm_prefetch_b_k_opt = b.option(usize, "gemm_prefetch_b_k", "Prefetch distance (in k-iterations) for packed B panels; 0=auto") orelse 0;
     const gemm_prefetch_locality_opt = b.option(u2, "gemm_prefetch_locality", "Prefetch locality hint (0-3)") orelse 3;
+    const gemm_tuning_opt = b.option([]const u8, "gemm_tuning", "GEMM tuning preset: auto|generic|avx2|avx512|neon") orelse "auto";
 
     // Optional non-temporal (streaming) stores.
     const nt_stores_opt = b.option(bool, "nt_stores", "Enable non-temporal (streaming) stores in eligible write-only paths") orelse false;
@@ -58,6 +59,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(usize, "gemm_prefetch_a_k", gemm_prefetch_a_k_opt);
     build_options.addOption(usize, "gemm_prefetch_b_k", gemm_prefetch_b_k_opt);
     build_options.addOption(u2, "gemm_prefetch_locality", gemm_prefetch_locality_opt);
+    build_options.addOption([]const u8, "gemm_tuning", gemm_tuning_opt);
     build_options.addOption(bool, "nt_stores", nt_stores_opt);
     build_options.addOption(usize, "nt_store_min_bytes", nt_store_min_bytes_opt);
     mod.addOptions("build_options", build_options);

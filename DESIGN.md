@@ -83,7 +83,24 @@ GEMM \(C*{M×N} = A*{M×K} B\_{K×N}\) does \(2MNK\) FLOPs.
 - **Arithmetic intensity** increases with matrix size and effective blocking.
 - For large matrices, GEMM should be compute-bound if packing avoids cache/TLB thrash.
 
-We target “within 2×” of a conservative theoretical peak for first cut; tuning comes later.
+We target “within 2×” of a conservative theoretical peak for first cut; tuning is incremental and mostly comptime.
+
+### Tuning presets (comptime)
+
+`blazt.gemm.computeTileParams(T)` computes `MR/NR/KC/MC/NC` at comptime from:
+
+- target feature flags (`@import("builtin").cpu`)
+- cache sizes (`blazt.CpuInfo.native()` which sources caches from the generated `cpu_cache` module)
+
+You can force a coarse preset at build time:
+
+- `-Dgemm_tuning=auto` (default): choose a preset from CPU features
+- `-Dgemm_tuning=generic`: conservative baseline
+- `-Dgemm_tuning=avx2`: x86 AVX2(+FMA) defaults
+- `-Dgemm_tuning=avx512`: x86 AVX-512 defaults
+- `-Dgemm_tuning=neon`: ARM NEON defaults
+
+These presets currently influence the chosen `NR` and some cache-budget heuristics; deeper target tables can be layered in later without changing the GEMM API.
 
 ### Packing contracts
 
@@ -109,7 +126,7 @@ The exact strategy is tuned after correctness is established.
 Thread pool is responsible for:
 
 - reusable worker threads (no spawn-per-op)
-- bounded queues / work stealing for load balancing
+- bounded queue + condition-variable wakeup (work stealing can be layered back in later)
 - `submit()` + `waitAll()` semantics
 
 ### GEMM decomposition
