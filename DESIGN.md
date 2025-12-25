@@ -132,6 +132,8 @@ Zig’s `@Vector` types are **fixed-length at comptime**, while ARM SVE vector l
 - probe runtime VL bytes on `aarch64+sve` builds (`runtimeVlBytes()`; returns 0 when unavailable)
 - provide a generic dispatch helper to pick from fixed-width kernel instantiations
 
+Prototype notes for SVE kernel strategy live in `docs/sve-prototype.md`.
+
 ## Parallelism plan (thread pool + decomposition)
 
 ### Thread pool responsibilities
