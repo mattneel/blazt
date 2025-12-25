@@ -27,6 +27,7 @@ pub const cpu = @import("cpu.zig");
 pub const CpuInfo = cpu.CpuInfo;
 
 pub const simd = @import("simd.zig");
+pub const sve = @import("sve.zig").sve;
 
 pub const gemm = @import("gemm.zig");
 

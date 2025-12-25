@@ -127,6 +127,11 @@ Zig’s `@Vector` types are **fixed-length at comptime**, while ARM SVE vector l
 
 **Follow-ups (beads):** `blazt-w3e`, `blazt-adk`
 
+`blazt` also provides a small `sve` helper module (`blazt.sve`) that can:
+
+- probe runtime VL bytes on `aarch64+sve` builds (`runtimeVlBytes()`; returns 0 when unavailable)
+- provide a generic dispatch helper to pick from fixed-width kernel instantiations
+
 ## Parallelism plan (thread pool + decomposition)
 
 ### Thread pool responsibilities
