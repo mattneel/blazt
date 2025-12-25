@@ -257,7 +257,18 @@ const InjectQueue = struct {
         }
 
         const head = self.head.load(.acquire);
-        if (tail != head) return null;
+        if (tail != head) {
+            // A producer has advanced `head` but has not linked `tail.next` yet.
+            // If we return null here, the worker may go to sleep and miss work.
+            while (true) {
+                next = tail.next.load(.acquire);
+                if (next) |n| {
+                    self.tail = n;
+                    return tail;
+                }
+                std.atomic.spinLoopHint();
+            }
+        }
 
         self.push(&self.stub);
 
