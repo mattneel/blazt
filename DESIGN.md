@@ -12,6 +12,7 @@ For the full from-first-principles specification and background, see [`README.md
   - Debug: `zig build test`
   - ReleaseFast: `zig build test -Doptimize=ReleaseFast`
 - **Zig 0.16 gotchas**: [`docs/zig-gotchas.md`](docs/zig-gotchas.md)
+- **Optimized Zig “northern star”**: [`docs/kangarootwelve.zig`](docs/kangarootwelve.zig) — if you’re writing/refactoring performance-critical ops/kernels, prefer the same idioms (SIMD-first `@Vector` code, cache-aligned buffers, explicit scratch/no hidden allocations, and careful batching/parallel thresholds).
 
 ## Goals (what we optimize for)
 

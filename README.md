@@ -7,6 +7,7 @@
 
 Development notes:
 - Zig 0.16 API/syntax gotchas encountered in this repo: [`docs/zig-gotchas.md`](docs/zig-gotchas.md)
+- Optimized Zig “northern star”: [`docs/kangarootwelve.zig`](docs/kangarootwelve.zig) — one of the most beautiful examples of optimized Zig we’ve ever seen; we should aspire to implement and refactor our ops/kernels/etc using the same idioms.
 
 ---
 
