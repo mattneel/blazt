@@ -1542,14 +1542,22 @@ pub fn main() !void {
         break :blk s.len != 0 and !std.mem.eql(u8, s, "0");
     };
 
-    var oracle_opt: ?blazt.oracle.Oracle = null;
-    if (do_oracle_bench) {
-        oracle_opt = blazt.oracle.Oracle.loadAny(alloc) catch |err| switch (err) {
-            error.LibraryNotFound => null,
-            else => return err,
-        };
+    var oracles: std.ArrayList(blazt.oracle.Oracle) = .empty;
+    defer {
+        for (oracles.items) |*o| o.unload();
+        oracles.deinit(alloc);
     }
-    defer if (oracle_opt) |*o| o.unload();
+
+    if (do_oracle_bench) {
+        const kinds = [_]blazt.oracle.Oracle.Kind{ .openblas, .blis, .mkl };
+        for (kinds) |kind| {
+            const o = blazt.oracle.Oracle.loadKind(alloc, kind) catch |err| switch (err) {
+                error.LibraryNotFound => continue,
+                else => return err,
+            };
+            try oracles.append(alloc, o);
+        }
+    }
 
     var a_cm = try blazt.Matrix(f32, .col_major).init(alloc, m_gemm, k_gemm);
     defer a_cm.deinit();
@@ -1604,7 +1612,7 @@ pub fn main() !void {
     }
     try out_gemm.flush();
 
-    if (oracle_opt) |*o| {
+    if (oracles.items.len != 0) {
         // Use a smaller size for oracle comparison to avoid relying on the oracle's
         // internal threading/dispatch behavior at very large sizes.
         const m_or: usize = 256;
@@ -1646,33 +1654,36 @@ pub fn main() !void {
         );
         try out_gemm.flush();
 
-        const oracle_name = switch (o.kind) {
-            .openblas => "oracle.sgemm(openblas,col_major)",
-            .blis => "oracle.sgemm(blis,col_major)",
-        };
-        var res_or = try blazt.bench.run(alloc, oracle_name, .{
-            .warmup_iters = 2,
-            .samples = 10,
-            .inner_iters = 1,
-        }, oracleSgemmOps, .{ o, m_or, n_or, k_or, a_or, b_or, &c_or });
-        defer res_or.deinit();
-        res_or.sortInPlace();
-        const or_p50 = blazt.bench.medianSortedNs(res_or.samples_ns);
-        const or_p90 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.90);
-        const or_p99 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.99);
-        try out_gemm.print(
-            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
-            .{
-                res_or.name,
-                or_p50,
-                blazt.bench.gflops(flops_or, or_p50),
-                or_p90,
-                blazt.bench.gflops(flops_or, or_p90),
-                or_p99,
-                blazt.bench.gflops(flops_or, or_p99),
-            },
-        );
-        try out_gemm.flush();
+        for (oracles.items) |*o| {
+            const oracle_name = switch (o.kind) {
+                .openblas => "oracle.sgemm(openblas,col_major)",
+                .blis => "oracle.sgemm(blis,col_major)",
+                .mkl => "oracle.sgemm(mkl,col_major)",
+            };
+            var res_or = try blazt.bench.run(alloc, oracle_name, .{
+                .warmup_iters = 2,
+                .samples = 10,
+                .inner_iters = 1,
+            }, oracleSgemmOps, .{ o, m_or, n_or, k_or, a_or, b_or, &c_or });
+            defer res_or.deinit();
+            res_or.sortInPlace();
+            const or_p50 = blazt.bench.medianSortedNs(res_or.samples_ns);
+            const or_p90 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.90);
+            const or_p99 = blazt.bench.percentileSortedNs(res_or.samples_ns, 0.99);
+            try out_gemm.print(
+                "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+                .{
+                    res_or.name,
+                    or_p50,
+                    blazt.bench.gflops(flops_or, or_p50),
+                    or_p90,
+                    blazt.bench.gflops(flops_or, or_p90),
+                    or_p99,
+                    blazt.bench.gflops(flops_or, or_p99),
+                },
+            );
+            try out_gemm.flush();
+        }
     }
 
     try benchCacheHotAfterZero(alloc, out_gemm);

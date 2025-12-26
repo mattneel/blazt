@@ -1,11 +1,13 @@
 const std = @import("std");
 
-/// Load reference BLAS implementations (OpenBLAS / BLIS) at runtime to enable parity tests.
+/// Load reference BLAS implementations (OpenBLAS / BLIS / MKL) at runtime to enable parity tests
+/// and oracle benchmarking.
 ///
 /// ## Configuration
 /// - `BLAZT_ORACLE_LIB`: explicit path/name to the library to load (highest priority)
 /// - `BLAZT_ORACLE_OPENBLAS`: path/name for OpenBLAS
 /// - `BLAZT_ORACLE_BLIS`: path/name for BLIS
+/// - `BLAZT_ORACLE_MKL`: path/name for MKL (prefer `libmkl_rt.so`)
 ///
 /// If no env vars are set, we try common sonames (e.g. `libopenblas.so`, `libblis.so`).
 pub const Oracle = struct {
@@ -18,7 +20,7 @@ pub const Oracle = struct {
     sgemm_f77: F77Sgemm,
     dgemm_f77: F77Dgemm,
 
-    pub const Kind = enum { openblas, blis };
+    pub const Kind = enum { openblas, blis, mkl };
 
     pub const LoadError =
         error{ LibraryNotFound, SymbolNotFound } ||
@@ -133,6 +135,7 @@ pub const Oracle = struct {
     pub fn loadAny(allocator: std.mem.Allocator) LoadError!Oracle {
         if (try tryLoadKind(allocator, .openblas)) |o| return o;
         if (try tryLoadKind(allocator, .blis)) |o| return o;
+        if (try tryLoadKind(allocator, .mkl)) |o| return o;
         return error.LibraryNotFound;
     }
 
@@ -142,6 +145,10 @@ pub const Oracle = struct {
 
     pub fn loadBLIS(allocator: std.mem.Allocator) LoadError!Oracle {
         return loadKind(allocator, .blis);
+    }
+
+    pub fn loadMKL(allocator: std.mem.Allocator) LoadError!Oracle {
+        return loadKind(allocator, .mkl);
     }
 
     pub fn loadKind(allocator: std.mem.Allocator, kind: Kind) LoadError!Oracle {
@@ -154,6 +161,7 @@ pub const Oracle = struct {
         const kind_env = switch (kind) {
             .openblas => "BLAZT_ORACLE_OPENBLAS",
             .blis => "BLAZT_ORACLE_BLIS",
+            .mkl => "BLAZT_ORACLE_MKL",
         };
         if (try tryEnvPath(allocator, kind_env)) |p| {
             defer allocator.free(p);
@@ -275,6 +283,18 @@ pub const Oracle = struct {
                 "/usr/lib64/libblis.so",
                 "/usr/lib64/libblis.so.4",
                 "/usr/lib64/libblis.so.3",
+            },
+            .mkl => &[_][]const u8{
+                // oneAPI runtime library (preferred)
+                "libmkl_rt.so",
+                "libmkl_rt.so.2",
+                "libmkl_rt.so.1",
+                // common system locations
+                "/lib64/libmkl_rt.so",
+                "/usr/lib64/libmkl_rt.so",
+                // common Intel oneAPI install locations
+                "/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so",
+                "/opt/intel/oneapi/mkl/latest/lib/libmkl_rt.so",
             },
         };
     }

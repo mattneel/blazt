@@ -714,6 +714,7 @@ The oracle loader will try common system sonames (e.g. `libopenblas.so`, `libbli
 - `BLAZT_ORACLE_LIB`: explicit path/name to the library to load
 - `BLAZT_ORACLE_OPENBLAS`: path/name for OpenBLAS
 - `BLAZT_ORACLE_BLIS`: path/name for BLIS
+- `BLAZT_ORACLE_MKL`: path/name for MKL (prefer `libmkl_rt.so`)
 
 Tests that depend on an oracle will **skip** if no suitable library can be loaded.
 
@@ -747,6 +748,15 @@ test "gemm parity with OpenBLAS" {
 ```
 
 ### 7.3 Benchmark Framework
+
+#### Running benchmarks
+
+- `zig build bench`: runs the benchmark suite (bench executable is always built with `ReleaseFast`)
+- `BLAZT_BENCH_LAPACK_HEAVY=1`: opt into larger Jacobi SVD / Jacobi eig problem sizes (can take a long time)
+- `BLAZT_BENCH_ORACLE=1`: enable oracle comparison (GEMM vs OpenBLAS/BLIS/MKL if found)
+  - To pin an oracle to a specific library path, set the corresponding `BLAZT_ORACLE_*` variable above.
+  - **Threading note**: for fair single-thread comparisons, set e.g.
+    `OPENBLAS_NUM_THREADS=1`, `BLIS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `OMP_NUM_THREADS=1`.
 
 ```zig
 const Benchmark = struct {
