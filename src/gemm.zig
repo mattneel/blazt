@@ -642,5 +642,3 @@ pub fn packB(
         }
     }
 }
-
-

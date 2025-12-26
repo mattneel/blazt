@@ -1545,22 +1545,10 @@ pub fn main() !void {
         break :blk s.len != 0 and !std.mem.eql(u8, s, "0");
     };
 
-    var oracles: std.ArrayList(blazt.oracle.Oracle) = .empty;
-    defer {
-        for (oracles.items) |*o| o.unload();
-        oracles.deinit(alloc);
-    }
-
-    if (do_oracle_bench) {
-        const kinds = [_]blazt.oracle.Oracle.Kind{ .openblas, .blis, .mkl };
-        for (kinds) |kind| {
-            const o = blazt.oracle.Oracle.loadKind(alloc, kind) catch |err| switch (err) {
-                error.LibraryNotFound => continue,
-                else => return err,
-            };
-            try oracles.append(alloc, o);
-        }
-    }
+    // NOTE: We intentionally load+bench+unload each oracle one-at-a-time.
+    // Some BLAS libraries create thread pools at load time (or first call) that can remain
+    // active and interfere with subsequent benchmarks of other libraries.
+    const oracle_kinds = [_]blazt.oracle.Oracle.Kind{ .openblas, .blis, .mkl };
 
     var a_cm = try blazt.Matrix(f32, .col_major).init(alloc, m_gemm, k_gemm);
     defer a_cm.deinit();
@@ -1615,13 +1603,13 @@ pub fn main() !void {
     }
     try out_gemm.flush();
 
-    if (oracles.items.len != 0) {
-        // Use a smaller size for oracle comparison to avoid relying on the oracle's
-        // internal threading/dispatch behavior at very large sizes.
-        const m_or: usize = 256;
-        const n_or: usize = 256;
-        const k_or: usize = 256;
-        const flops_or: u64 = @intCast(@as(u64, 2) * @as(u64, m_or) * @as(u64, n_or) * @as(u64, k_or));
+    if (do_oracle_bench) {
+        // Oracle comparison uses the same size as the main GEMM benchmark so the numbers
+        // are directly comparable.
+        const m_or: usize = m_gemm;
+        const n_or: usize = n_gemm;
+        const k_or: usize = k_gemm;
+        const flops_or: u64 = gemm_flops;
 
         var a_or = try blazt.Matrix(f32, .col_major).init(alloc, m_or, k_or);
         defer a_or.deinit();
@@ -1657,7 +1645,12 @@ pub fn main() !void {
         );
         try out_gemm.flush();
 
-        for (oracles.items) |*o| {
+        for (oracle_kinds) |kind| {
+            var o = blazt.oracle.Oracle.loadKind(alloc, kind) catch |err| switch (err) {
+                error.LibraryNotFound => continue,
+                else => return err,
+            };
+            defer o.unload();
             const oracle_name = switch (o.kind) {
                 .openblas => "oracle.sgemm(openblas,col_major)",
                 .blis => "oracle.sgemm(blis,col_major)",
@@ -1667,7 +1660,7 @@ pub fn main() !void {
                 .warmup_iters = 2,
                 .samples = 10,
                 .inner_iters = 1,
-            }, oracleSgemmOps, .{ o, m_or, n_or, k_or, a_or, b_or, &c_or });
+            }, oracleSgemmOps, .{ &o, m_or, n_or, k_or, a_or, b_or, &c_or });
             defer res_or.deinit();
             res_or.sortInPlace();
             const or_p50 = blazt.bench.medianSortedNs(res_or.samples_ns);
