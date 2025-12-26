@@ -41,6 +41,7 @@ comptime {
     _ = @import("trmm_trsm_test.zig");
     _ = @import("lu_test.zig");
     _ = @import("cholesky_test.zig");
+    _ = @import("qr_test.zig");
 }
 
 test {

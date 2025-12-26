@@ -142,6 +142,19 @@ fn choleskyOps(
     std.mem.doNotOptimizeAway(a.data[0]);
 }
 
+fn qrOps(
+    m: usize,
+    n: usize,
+    a0: blazt.Matrix(f32, .row_major),
+    a: *blazt.Matrix(f32, .row_major),
+    tau: []f32,
+) void {
+    _ = .{ m, n };
+    @memcpy(a.data, a0.data);
+    blazt.ops.qr(f32, a, tau);
+    std.mem.doNotOptimizeAway(a.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -1200,6 +1213,44 @@ pub fn main() !void {
             chol_p50, blazt.bench.gflops(chol_flops, chol_p50),
             chol_p90, blazt.bench.gflops(chol_flops, chol_p90),
             chol_p99, blazt.bench.gflops(chol_flops, chol_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // QR bench (row_major, Householder).
+    const m_qr: usize = 1024;
+    const n_qr: usize = 512;
+    const k_qr: usize = @min(m_qr, n_qr);
+    var a0_qr = try blazt.Matrix(f32, .row_major).init(alloc, m_qr, n_qr);
+    defer a0_qr.deinit();
+    var a_qr = try blazt.Matrix(f32, .row_major).init(alloc, m_qr, n_qr);
+    defer a_qr.deinit();
+    const tau_qr = try alloc.alloc(f32, k_qr);
+    defer alloc.free(tau_qr);
+
+    for (a0_qr.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 37 + 11) % 1024)))) * @as(f32, 0.001);
+
+    var res_qr = try blazt.bench.run(alloc, "ops.qr(f32,row_major)", .{
+        .warmup_iters = 2,
+        .samples = 10,
+        .inner_iters = 1,
+    }, qrOps, .{ m_qr, n_qr, a0_qr, &a_qr, tau_qr });
+    defer res_qr.deinit();
+    res_qr.sortInPlace();
+    const qr_p50 = blazt.bench.medianSortedNs(res_qr.samples_ns);
+    const qr_p90 = blazt.bench.percentileSortedNs(res_qr.samples_ns, 0.90);
+    const qr_p99 = blazt.bench.percentileSortedNs(res_qr.samples_ns, 0.99);
+
+    // QR flops (m>=n): ~ 2*m*n^2 - 2/3*n^3
+    const qr_flops: u64 = @intCast((@as(u128, 2) * @as(u128, m_qr) * @as(u128, n_qr) * @as(u128, n_qr)) -
+        ((@as(u128, 2) * @as(u128, n_qr) * @as(u128, n_qr) * @as(u128, n_qr)) / 3));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_qr.name,
+            qr_p50, blazt.bench.gflops(qr_flops, qr_p50),
+            qr_p90, blazt.bench.gflops(qr_flops, qr_p90),
+            qr_p99, blazt.bench.gflops(qr_flops, qr_p99),
         },
     );
     try out_gemm.flush();

@@ -3089,6 +3089,138 @@ pub const ops = struct {
         }
     }
 
+    /// QR factorization via Householder reflectors (in-place): computes `A = Q*R`.
+    ///
+    /// - Input `a` is `m×n` (row-major) and is overwritten with:
+    ///   - `R` in the upper triangle / upper trapezoid
+    ///   - Householder vectors below the diagonal (each reflector has implicit `v[0]=1`)
+    /// - `tau` (length >= `min(m,n)`) stores the Householder scalar factors.
+    ///
+    /// To explicitly form `Q`, use `qrFormQ`.
+    pub fn qr(comptime T: type, a: *matrix.Matrix(T, .row_major), tau: []T) void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.qr currently only supports floating-point types");
+        }
+
+        const m: usize = a.rows;
+        const n: usize = a.cols;
+        const stride: usize = a.stride;
+        std.debug.assert(stride >= n);
+
+        const kmax: usize = @min(m, n);
+        std.debug.assert(tau.len >= kmax);
+        if (kmax == 0) return;
+
+        var data = a.data;
+
+        var k: usize = 0;
+        while (k < kmax) : (k += 1) {
+            // Compute Householder reflector to zero out a[k+1..m, k].
+            const kk = k * stride + k;
+            const alpha: T = data[kk];
+
+            // sigma = ||x_tail||^2
+            var sigma: T = @as(T, 0);
+            var i: usize = k + 1;
+            while (i < m) : (i += 1) {
+                const v = data[i * stride + k];
+                sigma += v * v;
+            }
+
+            if (sigma == @as(T, 0)) {
+                tau[k] = @as(T, 0);
+                continue;
+            }
+
+            const norm: T = @sqrt(alpha * alpha + sigma);
+            const sign: T = if (alpha >= @as(T, 0)) @as(T, 1) else @as(T, -1);
+            const beta: T = -sign * norm;
+
+            const v1: T = alpha - beta;
+            tau[k] = (beta - alpha) / beta;
+
+            // Store beta on diagonal; scale the vector tail in-place (v[0] is implicit 1).
+            data[kk] = beta;
+            i = k + 1;
+            while (i < m) : (i += 1) {
+                data[i * stride + k] /= v1;
+            }
+
+            // Apply H = I - tau*v*v^T to remaining columns.
+            var j: usize = k + 1;
+            while (j < n) : (j += 1) {
+                // w = v^T * A[k:m, j]
+                var w: T = data[k * stride + j];
+                i = k + 1;
+                while (i < m) : (i += 1) {
+                    w += data[i * stride + k] * data[i * stride + j];
+                }
+                w *= tau[k];
+
+                data[k * stride + j] -= w;
+                i = k + 1;
+                while (i < m) : (i += 1) {
+                    data[i * stride + j] -= data[i * stride + k] * w;
+                }
+            }
+        }
+    }
+
+    /// Form an explicit `m×m` orthogonal matrix `Q` from a QR factorization produced by `qr`.
+    ///
+    /// - `a_qr` is the output of `qr` (same `m×n` shape as the original input).
+    /// - `tau` must match the `tau` produced by `qr`.
+    /// - `q_out` must be `m×m` (row-major) and will be filled with `Q`.
+    pub fn qrFormQ(comptime T: type, a_qr: matrix.Matrix(T, .row_major), tau: []const T, q_out: *matrix.Matrix(T, .row_major)) void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.qrFormQ currently only supports floating-point types");
+        }
+
+        const m: usize = a_qr.rows;
+        const n: usize = a_qr.cols;
+        _ = n;
+        std.debug.assert(q_out.rows == m);
+        std.debug.assert(q_out.cols == m);
+        std.debug.assert(q_out.stride >= q_out.cols);
+
+        const kmax: usize = @min(m, a_qr.cols);
+        std.debug.assert(tau.len >= kmax);
+
+        // Q := I
+        for (0..m) |i| {
+            const off = i * q_out.stride;
+            for (0..m) |j| q_out.data[off + j] = if (i == j) @as(T, 1) else @as(T, 0);
+        }
+
+        if (kmax == 0) return;
+
+        // Apply reflectors from last to first: Q = H_{kmax-1} ... H_0
+        var kk: usize = kmax;
+        while (kk != 0) {
+            kk -= 1;
+            const k = kk;
+            const tau_k: T = tau[k];
+            if (tau_k == @as(T, 0)) continue;
+
+            // v = [1; a_qr[k+1..m, k]]
+            var col: usize = 0;
+            while (col < m) : (col += 1) {
+                var w: T = q_out.data[k * q_out.stride + col];
+                var i: usize = k + 1;
+                while (i < m) : (i += 1) {
+                    w += a_qr.data[i * a_qr.stride + k] * q_out.data[i * q_out.stride + col];
+                }
+                w *= tau_k;
+
+                q_out.data[k * q_out.stride + col] -= w;
+                i = k + 1;
+                while (i < m) : (i += 1) {
+                    q_out.data[i * q_out.stride + col] -= a_qr.data[i * a_qr.stride + k] * w;
+                }
+            }
+        }
+    }
+
     /// Index of the element with maximum absolute value.
     ///
     /// - **Tie-break**: first occurrence wins (lowest index).
