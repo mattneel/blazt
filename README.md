@@ -16,6 +16,11 @@ Development notes:
 - **Runnable examples (GEMM, LU, Cholesky)**: [`examples/main.zig`](examples/main.zig)
   - Run: `zig build examples`
 
+## Benchmarking helpers
+
+- **Full oracle bench runner (OpenBLAS/BLIS/MKL + ours)**: `tools/bench_oracles.sh`
+  - Run: `./tools/bench_oracles.sh`
+
 ---
 
 ## Abstract
