@@ -147,11 +147,111 @@ summarize_file() {
   ' "${path}"
 }
 
+fmt1() {
+  local v="${1:-}"
+  if [[ -z "${v}" ]]; then
+    echo "n/a"
+    return 0
+  fi
+  # Print with 1 decimal when it's numeric, otherwise pass through.
+  if [[ "${v}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf "%.1f" "${v}"
+  else
+    echo "${v}"
+  fi
+}
+
+p50_gflops() {
+  local path="$1"
+  local want="$2"
+  awk -v want="$want" '
+    /^bench / { name = substr($0, 7); next }
+    /^  p50:/ && name == want {
+      if (match($0, /\(([0-9.]+) GFLOP\/s\)/, m)) { print m[1]; exit }
+    }
+  ' "${path}"
+}
+
+bold_if() {
+  local label="$1"
+  local best="$2"
+  local val="$3"
+  if [[ "${label}" == "${best}" ]]; then
+    printf "**%s**" "${val}"
+  else
+    printf "%s" "${val}"
+  fi
+}
+
+best_label() {
+  local b="$1"
+  local o="$2"
+  local l="$3"
+  local m="$4"
+  awk -v b="$b" -v o="$o" -v l="$l" -v m="$m" '
+    function ok(x) { return x ~ /^[0-9]+(\.[0-9]+)?$/ }
+    function num(x) { return x + 0.0 }
+    BEGIN {
+      max = -1; lab = "";
+      if (ok(b) && num(b) > max) { max = num(b); lab = "blazt" }
+      if (ok(o) && num(o) > max) { max = num(o); lab = "OpenBLAS" }
+      if (ok(l) && num(l) > max) { max = num(l); lab = "BLIS" }
+      if (ok(m) && num(m) > max) { max = num(m); lab = "MKL" }
+      print lab
+    }
+  '
+}
+
 echo
 echo "=== GEMM/oracle p50 GFLOP/s summary (single-thread oracles) ==="
 summarize_file "${out_dir}/full_single_thread.txt"
 echo
 echo "=== GEMM/oracle p50 GFLOP/s summary (oracles threads=${max_threads}) ==="
 summarize_file "${out_dir}/full_${max_threads}_threads.txt"
+
+single_file="${out_dir}/full_single_thread.txt"
+max_file="${out_dir}/full_${max_threads}_threads.txt"
+
+blazt_1="$(p50_gflops "${single_file}" "ops.gemm(f32,row_major)")"
+blazt_n="$(p50_gflops "${max_file}" "parallel.gemm(f32,row_major,threads=${max_threads})")"
+
+openblas_1="$(p50_gflops "${single_file}" "oracle.sgemm(openblas,col_major)")"
+openblas_n="$(p50_gflops "${max_file}" "oracle.sgemm(openblas,col_major)")"
+
+blis_1="$(p50_gflops "${single_file}" "oracle.sgemm(blis,col_major)")"
+blis_n="$(p50_gflops "${max_file}" "oracle.sgemm(blis,col_major)")"
+
+mkl_1="$(p50_gflops "${single_file}" "oracle.sgemm(mkl,col_major)")"
+mkl_n="$(p50_gflops "${max_file}" "oracle.sgemm(mkl,col_major)")"
+
+best_n="$(best_label "${blazt_n}" "${openblas_n}" "${blis_n}" "${mkl_n}")"
+
+echo
+echo "=== Markdown snippet ==="
+if [[ -n "${mkl_1}" ]]; then
+  echo "Now MKL is behaving ($(fmt1 "${mkl_1}") GFLOP/s single-threaded)."
+fi
+echo
+echo "**${max_threads} threads, all libraries:**"
+echo '```'
+printf "blazt:     %s GFLOP/s\n" "$(fmt1 "${blazt_n}")"
+printf "OpenBLAS:  %s GFLOP/s\n" "$(fmt1 "${openblas_n}")"
+printf "BLIS:      %s GFLOP/s\n" "$(fmt1 "${blis_n}")"
+printf "MKL:       %s GFLOP/s\n" "$(fmt1 "${mkl_n}")"
+echo '```'
+echo
+echo "| Threads | blazt | OpenBLAS | BLIS | MKL |"
+echo "|---------|-------|----------|------|-----|"
+printf "| 1 | %s | %s | %s | %s |\n" \
+  "$(fmt1 "${blazt_1}")" \
+  "$(fmt1 "${openblas_1}")" \
+  "$(fmt1 "${blis_1}")" \
+  "$(fmt1 "${mkl_1}")"
+printf "| %d | %s | %s | %s | %s |\n" \
+  "${max_threads}" \
+  "$(bold_if "blazt" "${best_n}" "$(fmt1 "${blazt_n}")")" \
+  "$(bold_if "OpenBLAS" "${best_n}" "$(fmt1 "${openblas_n}")")" \
+  "$(bold_if "BLIS" "${best_n}" "$(fmt1 "${blis_n}")")" \
+  "$(bold_if "MKL" "${best_n}" "$(fmt1 "${mkl_n}")")"
 
 
