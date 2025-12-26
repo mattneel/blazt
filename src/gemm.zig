@@ -309,8 +309,7 @@ pub fn microKernel(
     var p: usize = 0;
     while (p < kc) : (p += 1) {
         prefetchPackedPanels(T, MR, NR, kc, a, b, p);
-        const a_arr: [MR]T = a[p * MR ..][0..MR].*;
-        const va: Vec = @bitCast(a_arr);
+        const va: Vec = @as(*align(1) const Vec, @ptrCast(a + p * MR)).*;
 
         inline for (0..NR) |j| {
             const vb: Vec = @splat(b[p * NR + j]);
@@ -319,28 +318,59 @@ pub fn microKernel(
     }
 
     // Store/update C.
-    if (beta == @as(T, 0)) {
-        // beta=0 fast path: do not read C.
-        inline for (0..NR) |j| {
-            const col = acc[j];
-            inline for (0..MR) |i| {
-                c[i * rs_c + j * cs_c] = alpha * col[i];
+    if (rs_c == 1) {
+        const alpha_v: Vec = @splat(alpha);
+        if (beta == @as(T, 0)) {
+            // beta=0 fast path: do not read C.
+            inline for (0..NR) |j| {
+                const out: Vec = alpha_v * acc[j];
+                const ptr_t: [*]T = c + j * cs_c;
+                const ptr_v: *align(1) Vec = @ptrCast(ptr_t);
+                ptr_v.* = out;
             }
-        }
-    } else if (beta == @as(T, 1)) {
-        inline for (0..NR) |j| {
-            const col = acc[j];
-            inline for (0..MR) |i| {
-                const idx = i * rs_c + j * cs_c;
-                c[idx] = alpha * col[i] + c[idx];
+        } else if (beta == @as(T, 1)) {
+            inline for (0..NR) |j| {
+                const ptr_t: [*]T = c + j * cs_c;
+                const ptr_v: *align(1) Vec = @ptrCast(ptr_t);
+                const vc: Vec = ptr_v.*;
+                const out: Vec = alpha_v * acc[j] + vc;
+                ptr_v.* = out;
+            }
+        } else {
+            const beta_v: Vec = @splat(beta);
+            inline for (0..NR) |j| {
+                const ptr_t: [*]T = c + j * cs_c;
+                const ptr_v: *align(1) Vec = @ptrCast(ptr_t);
+                const vc: Vec = ptr_v.*;
+                const out: Vec = alpha_v * acc[j] + beta_v * vc;
+                ptr_v.* = out;
             }
         }
     } else {
-        inline for (0..NR) |j| {
-            const col = acc[j];
-            inline for (0..MR) |i| {
-                const idx = i * rs_c + j * cs_c;
-                c[idx] = alpha * col[i] + beta * c[idx];
+        // Generic strided path: scalar updates.
+        if (beta == @as(T, 0)) {
+            // beta=0 fast path: do not read C.
+            inline for (0..NR) |j| {
+                const col = acc[j];
+                inline for (0..MR) |i| {
+                    c[i * rs_c + j * cs_c] = alpha * col[i];
+                }
+            }
+        } else if (beta == @as(T, 1)) {
+            inline for (0..NR) |j| {
+                const col = acc[j];
+                inline for (0..MR) |i| {
+                    const idx = i * rs_c + j * cs_c;
+                    c[idx] = alpha * col[i] + c[idx];
+                }
+            }
+        } else {
+            inline for (0..NR) |j| {
+                const col = acc[j];
+                inline for (0..MR) |i| {
+                    const idx = i * rs_c + j * cs_c;
+                    c[idx] = alpha * col[i] + beta * c[idx];
+                }
             }
         }
     }
@@ -376,8 +406,7 @@ pub fn microKernelPartial(
     var p: usize = 0;
     while (p < kc) : (p += 1) {
         prefetchPackedPanels(T, MR, NR, kc, a, b, p);
-        const a_arr: [MR]T = a[p * MR ..][0..MR].*;
-        const va: Vec = @bitCast(a_arr);
+        const va: Vec = @as(*align(1) const Vec, @ptrCast(a + p * MR)).*;
         inline for (0..NR) |j| {
             const vb: Vec = @splat(b[p * NR + j]);
             acc[j] = simd.mulAdd(va, vb, acc[j]);
@@ -503,6 +532,8 @@ pub fn gemmBlockedRange(
     const rs_c: usize = 1;
     const cs_c: usize = c.stride;
 
+    const use_pack_a_block: bool = pack_a.len >= MC * KC;
+
     var jc: usize = jc0;
     while (jc < jc1) : (jc += NC) {
         const nc_cur = @min(NC, jc1 - jc);
@@ -512,47 +543,113 @@ pub fn gemmBlockedRange(
             const kc_cur = @min(KC, k - pc);
             const beta_block: T = if (pc == 0) beta else @as(T, 1);
 
-            // Iterate NR-wide panels of B, but batch several of them so we can reuse each packed A micro-panel
-            // across multiple B micro-panels (reduces redundant A packing work).
-            const nr_block_cols: usize = NR * PB_PANELS;
-            var jr0: usize = 0;
-            while (jr0 < nc_cur) : (jr0 += nr_block_cols) {
-                const rem_cols: usize = nc_cur - jr0;
-                const jb_cur: usize = @min(PB_PANELS, (rem_cols + NR - 1) / NR);
-
-                // Pack JB micro-panels of B into pack_b (each panel starts cache-line aligned).
-                var bj: usize = 0;
-                while (bj < jb_cur) : (bj += 1) {
-                    const jr: usize = jr0 + bj * NR;
-                    const nr_cur = @min(NR, nc_cur - jr);
-
-                    const pb_ptr_unaligned: [*]T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
-                    const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
-                    const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
-                    packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
-                }
-
+            if (use_pack_a_block) {
+                // Pack the entire MC×KC A block once (into pack_a) and reuse it across all B panels.
+                //
+                // This reduces redundant A packing work significantly for large N.
                 var ic: usize = 0;
                 while (ic < m) : (ic += MC) {
                     const mc_cur = @min(MC, m - ic);
+                    const mc_pad = roundUpMultiple(mc_cur, MR);
 
-                    var ir: usize = 0;
-                    while (ir < mc_cur) : (ir += MR) {
-                        const mr_cur = @min(MR, mc_cur - ir);
+                    // Packed A block size: mc_pad × kc_cur, arranged as MR-sized micro-panels.
+                    // Indexing: for micro-panel starting at `ir`, element at (p,i) is:
+                    //   pack_a_block[ir*kc_cur + p*MR + i]
+                    const pack_a_block: []align(memory.CacheLine) T = pack_a[0 .. mc_pad * kc_cur];
 
-                        // Pack one MR×KC micro-panel of A (reused across JB B panels).
-                        const pa = pack_a[0 .. MR * kc_cur];
-                        packA(T, .col_major, MR, kc_cur, mr_cur, a, ic + ir, pc, pa);
+                    // Pack A block (col_major) into pack_a_block.
+                    var ir_pack: usize = 0;
+                    while (ir_pack < mc_pad) : (ir_pack += MR) {
+                        const row_base = ic + ir_pack;
+                        for (0..kc_cur) |p| {
+                            const src_col_off = (pc + p) * a.stride;
+                            const dst_base = ir_pack * kc_cur + p * MR;
+                            inline for (0..MR) |i| {
+                                const r = row_base + i;
+                                pack_a_block[dst_base + i] = if (r < ic + mc_cur) a.data[src_col_off + r] else @as(T, 0);
+                            }
+                        }
+                    }
 
-                        bj = 0;
+                    // Iterate NR-wide panels of B (in small batches) and compute.
+                    const nr_block_cols: usize = NR * PB_PANELS;
+                    var jr0: usize = 0;
+                    while (jr0 < nc_cur) : (jr0 += nr_block_cols) {
+                        const rem_cols: usize = nc_cur - jr0;
+                        const jb_cur: usize = @min(PB_PANELS, (rem_cols + NR - 1) / NR);
+
+                        // Pack JB micro-panels of B into pack_b.
+                        var bj: usize = 0;
                         while (bj < jb_cur) : (bj += 1) {
                             const jr: usize = jr0 + bj * NR;
                             const nr_cur = @min(NR, nc_cur - jr);
 
-                            const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
-                            const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
-                            const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
-                            microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                            const pb_ptr_unaligned: [*]T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                            const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                            const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
+                            packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+                        }
+
+                        var ir: usize = 0;
+                        while (ir < mc_cur) : (ir += MR) {
+                            const mr_cur = @min(MR, mc_cur - ir);
+                            const pa_ptr: [*]const T = pack_a_block.ptr + ir * kc_cur;
+
+                            bj = 0;
+                            while (bj < jb_cur) : (bj += 1) {
+                                const jr: usize = jr0 + bj * NR;
+                                const nr_cur = @min(NR, nc_cur - jr);
+
+                                const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                                const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                                const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
+                                microKernelPartial(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: A micro-panel packing reused across a small batch of B micro-panels.
+                const nr_block_cols: usize = NR * PB_PANELS;
+                var jr0: usize = 0;
+                while (jr0 < nc_cur) : (jr0 += nr_block_cols) {
+                    const rem_cols: usize = nc_cur - jr0;
+                    const jb_cur: usize = @min(PB_PANELS, (rem_cols + NR - 1) / NR);
+
+                    // Pack JB micro-panels of B into pack_b (each panel starts cache-line aligned).
+                    var bj: usize = 0;
+                    while (bj < jb_cur) : (bj += 1) {
+                        const jr: usize = jr0 + bj * NR;
+                        const nr_cur = @min(NR, nc_cur - jr);
+
+                        const pb_ptr_unaligned: [*]T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                        const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                        const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
+                        packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+                    }
+
+                    var ic: usize = 0;
+                    while (ic < m) : (ic += MC) {
+                        const mc_cur = @min(MC, m - ic);
+
+                        var ir: usize = 0;
+                        while (ir < mc_cur) : (ir += MR) {
+                            const mr_cur = @min(MR, mc_cur - ir);
+
+                            // Pack one MR×KC micro-panel of A (reused across JB B panels).
+                            const pa = pack_a[0 .. MR * kc_cur];
+                            packA(T, .col_major, MR, kc_cur, mr_cur, a, ic + ir, pc, pa);
+
+                            bj = 0;
+                            while (bj < jb_cur) : (bj += 1) {
+                                const jr: usize = jr0 + bj * NR;
+                                const nr_cur = @min(NR, nc_cur - jr);
+
+                                const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                                const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                                const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
+                                microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                            }
                         }
                     }
                 }

@@ -119,11 +119,16 @@ fn gemmParallelBlockedColMajor(
 
     // If we can't meaningfully split, just run sequential.
     if (n == 0 or thread_pool.threads.len <= 1) {
-        var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+        const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+        var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+        const pack_a_big = memory.allocAligned(thread_pool.allocator, T, PACK_A_BLOCK_ELEMS) catch null;
+        defer if (pack_a_big) |buf| thread_pool.allocator.free(buf);
+        const pack_a_use: []align(memory.CacheLine) T = pack_a_big orelse pack_a_small[0..];
+
         const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
         const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
         var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
-        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a[0..], pack_b[0..]);
+        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b[0..]);
         return;
     }
 
@@ -145,16 +150,22 @@ fn gemmParallelBlockedColMajor(
 
     const task_count: usize = @min(max_tasks, (n + chunk_cols - 1) / chunk_cols);
     if (task_count <= 1) {
-        var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+        const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+        var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+        const pack_a_big = memory.allocAligned(thread_pool.allocator, T, PACK_A_BLOCK_ELEMS) catch null;
+        defer if (pack_a_big) |buf| thread_pool.allocator.free(buf);
+        const pack_a_use: []align(memory.CacheLine) T = pack_a_big orelse pack_a_small[0..];
+
         const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
         const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
         var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
-        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a[0..], pack_b[0..]);
+        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b[0..]);
         return;
     }
 
     const TaskCtx = struct {
         const Self = @This();
+        allocator: std.mem.Allocator,
         m: usize,
         n: usize,
         k: usize,
@@ -175,7 +186,12 @@ fn gemmParallelBlockedColMajor(
             if (self.col1 <= self.col0) return;
 
             // Per-task pack buffers (stack-local; avoids sharing).
-            var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+            const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+            var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+            const pack_a_big = memory.allocAligned(self.allocator, T, PACK_A_BLOCK_ELEMS) catch null;
+            defer if (pack_a_big) |buf| self.allocator.free(buf);
+            const pack_a_use: []align(memory.CacheLine) T = pack_a_big orelse pack_a_small[0..];
+
             const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
             const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
             var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
@@ -190,7 +206,7 @@ fn gemmParallelBlockedColMajor(
                 self.b,
                 self.beta,
                 self.c,
-                pack_a[0..],
+                pack_a_use,
                 pack_b[0..],
                 self.col0,
                 self.col1,
@@ -205,6 +221,7 @@ fn gemmParallelBlockedColMajor(
         const col1: usize = @min(n, col0 + chunk_cols);
 
         ctxs[ti] = .{
+            .allocator = thread_pool.allocator,
             .m = m,
             .n = n,
             .k = k,

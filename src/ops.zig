@@ -1449,12 +1449,28 @@ pub const ops = struct {
             const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
                 const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
                 const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
-            var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+                // Prefer a larger packed-A buffer (MC×KC) when we have an allocator available.
+                // This enables A-block packing inside the macro-kernel to reduce redundant packing work.
+                const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+                var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+                var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
+                var pack_a_big_alloc: ?std.mem.Allocator = null;
+                defer if (pack_a_big_opt) |buf| {
+                    pack_a_big_alloc.?.free(buf);
+                };
+
+                if (c.allocator) |alloc| {
+                    pack_a_big_alloc = alloc;
+                    pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
+                }
+
+                const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
+
                 var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
 
             switch (layout) {
                 .col_major => {
-                    gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a[0..], pack_b[0..]);
+                        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b[0..]);
                     return;
                 },
                 .row_major => {
@@ -1482,7 +1498,7 @@ pub const ops = struct {
                         .allocator = c.allocator,
                     };
 
-                    gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a[0..], pack_b[0..]);
+                        gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a_use, pack_b[0..]);
                     return;
                 },
             }
