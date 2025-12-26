@@ -3221,6 +3221,287 @@ pub const ops = struct {
         }
     }
 
+    /// Economy SVD (real): `A = U * diag(S) * Vt` with `k = min(m,n)`.
+    ///
+    /// - `a` (m×n) is used as workspace and is overwritten.
+    /// - `s` length >= `k` receives singular values in **descending** order.
+    /// - `u` must be `m×k` (column-orthonormal).
+    /// - `vt` must be `k×n` (row-orthonormal).
+    ///
+    /// Current implementation uses a one-sided Jacobi method.
+    pub fn svd(
+        comptime T: type,
+        a: *matrix.Matrix(T, .row_major),
+        s: []T,
+        u: *matrix.Matrix(T, .row_major),
+        vt: *matrix.Matrix(T, .row_major),
+    ) errors.SvdError!void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.svd currently only supports floating-point types");
+        }
+
+        const m: usize = a.rows;
+        const n: usize = a.cols;
+        const k: usize = @min(m, n);
+
+        std.debug.assert(a.stride >= n);
+        std.debug.assert(s.len >= k);
+        std.debug.assert(u.rows == m and u.cols == k);
+        std.debug.assert(vt.rows == k and vt.cols == n);
+        std.debug.assert(u.stride >= u.cols);
+        std.debug.assert(vt.stride >= vt.cols);
+
+        if (k == 0) return;
+
+        const eps: T = @sqrt(std.math.floatEps(T));
+        const max_sweeps: usize = 64;
+
+        const absT = struct {
+            inline fn f(x: T) T {
+                return @abs(x);
+            }
+        }.f;
+
+        const rot = struct {
+            inline fn compute(a_aa: T, a_bb: T, a_ab: T) struct { c: T, s: T } {
+                // Diagonalize [[a_aa, a_ab],[a_ab, a_bb]] with a Jacobi rotation.
+                if (a_ab == @as(T, 0)) return .{ .c = @as(T, 1), .s = @as(T, 0) };
+                const tau: T = (a_bb - a_aa) / (@as(T, 2) * a_ab);
+                const sign_tau: T = if (tau >= @as(T, 0)) @as(T, 1) else @as(T, -1);
+                const t: T = sign_tau / (absT(tau) + @sqrt(@as(T, 1) + tau * tau));
+                const c: T = @as(T, 1) / @sqrt(@as(T, 1) + t * t);
+                return .{ .c = c, .s = c * t };
+            }
+        };
+
+        if (m >= n) {
+            // Column orthogonalization. Accumulate Vt directly (rows) so we don't need a transpose later.
+            // vt := I (n×n)
+            for (0..k) |i| {
+                const off = i * vt.stride;
+                for (0..k) |j| vt.data[off + j] = if (i == j) @as(T, 1) else @as(T, 0);
+            }
+
+            var sweep: usize = 0;
+            while (sweep < max_sweeps) : (sweep += 1) {
+                var changed = false;
+                for (0..k) |p| {
+                    for (p + 1..k) |q| {
+                        // a = ||col_p||^2, b = ||col_q||^2, c = col_p^T col_q
+                        var aa: T = @as(T, 0);
+                        var bb: T = @as(T, 0);
+                        var ab: T = @as(T, 0);
+                        for (0..m) |i| {
+                            const ap = a.data[i * a.stride + p];
+                            const aq = a.data[i * a.stride + q];
+                            aa += ap * ap;
+                            bb += aq * aq;
+                            ab += ap * aq;
+                        }
+
+                        if (absT(ab) <= eps * @sqrt(aa * bb)) continue;
+
+                        const r = rot.compute(aa, bb, ab);
+                        const c = r.c;
+                        const sn = r.s;
+
+                        // A := A * G  (mix columns p,q)
+                        for (0..m) |i| {
+                            const idx_p = i * a.stride + p;
+                            const idx_q = i * a.stride + q;
+                            const ap = a.data[idx_p];
+                            const aq = a.data[idx_q];
+                            a.data[idx_p] = c * ap - sn * aq;
+                            a.data[idx_q] = sn * ap + c * aq;
+                        }
+
+                        // Vt := G^T * Vt (mix rows p,q)
+                        for (0..k) |j| {
+                            const idx_p = p * vt.stride + j;
+                            const idx_q = q * vt.stride + j;
+                            const vp = vt.data[idx_p];
+                            const vq = vt.data[idx_q];
+                            vt.data[idx_p] = c * vp - sn * vq;
+                            vt.data[idx_q] = sn * vp + c * vq;
+                        }
+
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+            }
+            if (sweep == max_sweeps) return error.NoConvergence;
+
+            // s[j] = ||col_j||, u(:,j) = col_j / s[j]
+            for (0..k) |j| {
+                var ss: T = @as(T, 0);
+                for (0..m) |i| {
+                    const v = a.data[i * a.stride + j];
+                    ss += v * v;
+                }
+                const sj: T = @sqrt(@max(ss, @as(T, 0)));
+                s[j] = sj;
+
+                if (sj == @as(T, 0)) {
+                    for (0..m) |i| u.data[i * u.stride + j] = @as(T, 0);
+                } else {
+                    const inv = @as(T, 1) / sj;
+                    for (0..m) |i| u.data[i * u.stride + j] = a.data[i * a.stride + j] * inv;
+                }
+            }
+
+            // Sort descending by singular value: swap columns of U and rows of Vt.
+            for (0..k) |i| {
+                var best: usize = i;
+                var best_v: T = s[i];
+                for (i + 1..k) |j| {
+                    if (s[j] > best_v) {
+                        best_v = s[j];
+                        best = j;
+                    }
+                }
+                if (best == i) continue;
+
+                // swap s
+                const tmp_s = s[i];
+                s[i] = s[best];
+                s[best] = tmp_s;
+
+                // swap columns i,best of U
+                for (0..m) |r| {
+                    const idx_i = r * u.stride + i;
+                    const idx_b = r * u.stride + best;
+                    const tmp = u.data[idx_i];
+                    u.data[idx_i] = u.data[idx_b];
+                    u.data[idx_b] = tmp;
+                }
+
+                // swap rows i,best of Vt
+                const row_i = i * vt.stride;
+                const row_b = best * vt.stride;
+                for (0..k) |cidx| {
+                    const tmp = vt.data[row_i + cidx];
+                    vt.data[row_i + cidx] = vt.data[row_b + cidx];
+                    vt.data[row_b + cidx] = tmp;
+                }
+            }
+        } else {
+            // Row orthogonalization. Accumulate U (square, m×m), and emit Vt as normalized rows (m×n).
+            // U := I (m×m)
+            for (0..k) |i| {
+                const off = i * u.stride;
+                for (0..k) |j| u.data[off + j] = if (i == j) @as(T, 1) else @as(T, 0);
+            }
+
+            var sweep: usize = 0;
+            while (sweep < max_sweeps) : (sweep += 1) {
+                var changed = false;
+                for (0..k) |p| {
+                    for (p + 1..k) |q| {
+                        // aa = ||row_p||^2, bb = ||row_q||^2, ab = row_p * row_q^T
+                        var aa: T = @as(T, 0);
+                        var bb: T = @as(T, 0);
+                        var ab: T = @as(T, 0);
+                        const off_p = p * a.stride;
+                        const off_q = q * a.stride;
+                        for (0..n) |j| {
+                            const ap = a.data[off_p + j];
+                            const aq = a.data[off_q + j];
+                            aa += ap * ap;
+                            bb += aq * aq;
+                            ab += ap * aq;
+                        }
+
+                        if (absT(ab) <= eps * @sqrt(aa * bb)) continue;
+
+                        const r = rot.compute(aa, bb, ab);
+                        const c = r.c;
+                        const sn = r.s;
+
+                        // A := R^T * A  (mix rows p,q)
+                        for (0..n) |j| {
+                            const idx_p = off_p + j;
+                            const idx_q = off_q + j;
+                            const ap = a.data[idx_p];
+                            const aq = a.data[idx_q];
+                            a.data[idx_p] = c * ap - sn * aq;
+                            a.data[idx_q] = sn * ap + c * aq;
+                        }
+
+                        // U := U * R (mix columns p,q)
+                        for (0..k) |i| {
+                            const idx_p = i * u.stride + p;
+                            const idx_q = i * u.stride + q;
+                            const up = u.data[idx_p];
+                            const uq = u.data[idx_q];
+                            u.data[idx_p] = c * up - sn * uq;
+                            u.data[idx_q] = sn * up + c * uq;
+                        }
+
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+            }
+            if (sweep == max_sweeps) return error.NoConvergence;
+
+            // s[i] = ||row_i||, vt[i,:] = row_i / s[i]
+            for (0..k) |i| {
+                const off = i * a.stride;
+                var ss: T = @as(T, 0);
+                for (0..n) |j| {
+                    const v = a.data[off + j];
+                    ss += v * v;
+                }
+                const si: T = @sqrt(@max(ss, @as(T, 0)));
+                s[i] = si;
+
+                const out_off = i * vt.stride;
+                if (si == @as(T, 0)) {
+                    for (0..n) |j| vt.data[out_off + j] = @as(T, 0);
+                } else {
+                    const inv = @as(T, 1) / si;
+                    for (0..n) |j| vt.data[out_off + j] = a.data[off + j] * inv;
+                }
+            }
+
+            // Sort descending: swap columns of U and rows of Vt.
+            for (0..k) |i| {
+                var best: usize = i;
+                var best_v: T = s[i];
+                for (i + 1..k) |j| {
+                    if (s[j] > best_v) {
+                        best_v = s[j];
+                        best = j;
+                    }
+                }
+                if (best == i) continue;
+
+                const tmp_s = s[i];
+                s[i] = s[best];
+                s[best] = tmp_s;
+
+                // swap columns in U (m×m)
+                for (0..k) |r| {
+                    const idx_i = r * u.stride + i;
+                    const idx_b = r * u.stride + best;
+                    const tmp = u.data[idx_i];
+                    u.data[idx_i] = u.data[idx_b];
+                    u.data[idx_b] = tmp;
+                }
+
+                // swap rows in Vt (m×n)
+                const row_i = i * vt.stride;
+                const row_b = best * vt.stride;
+                for (0..n) |cidx| {
+                    const tmp = vt.data[row_i + cidx];
+                    vt.data[row_i + cidx] = vt.data[row_b + cidx];
+                    vt.data[row_b + cidx] = tmp;
+                }
+            }
+        }
+    }
+
     /// Index of the element with maximum absolute value.
     ///
     /// - **Tie-break**: first occurrence wins (lowest index).

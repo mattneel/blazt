@@ -6,4 +6,6 @@ pub const TrsvError = error{ Singular };
 
 pub const TrsmError = error{ Singular };
 
+pub const SvdError = error{ NoConvergence };
+
 

@@ -42,6 +42,7 @@ comptime {
     _ = @import("lu_test.zig");
     _ = @import("cholesky_test.zig");
     _ = @import("qr_test.zig");
+    _ = @import("svd_test.zig");
 }
 
 test {

@@ -155,6 +155,21 @@ fn qrOps(
     std.mem.doNotOptimizeAway(a.data[0]);
 }
 
+fn svdOps(
+    m: usize,
+    n: usize,
+    a0: blazt.Matrix(f32, .row_major),
+    a: *blazt.Matrix(f32, .row_major),
+    s: []f32,
+    u: *blazt.Matrix(f32, .row_major),
+    vt: *blazt.Matrix(f32, .row_major),
+) void {
+    _ = .{ m, n };
+    @memcpy(a.data, a0.data);
+    _ = blazt.ops.svd(f32, a, s, u, vt) catch unreachable;
+    std.mem.doNotOptimizeAway(a.data[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -1251,6 +1266,47 @@ pub fn main() !void {
             qr_p50, blazt.bench.gflops(qr_flops, qr_p50),
             qr_p90, blazt.bench.gflops(qr_flops, qr_p90),
             qr_p99, blazt.bench.gflops(qr_flops, qr_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // SVD bench (row_major, economy, f32). (Jacobi; keep size modest.)
+    const m_svd: usize = 256;
+    const n_svd: usize = 128;
+    const k_svd: usize = @min(m_svd, n_svd);
+    var a0_svd = try blazt.Matrix(f32, .row_major).init(alloc, m_svd, n_svd);
+    defer a0_svd.deinit();
+    var a_svd = try blazt.Matrix(f32, .row_major).init(alloc, m_svd, n_svd);
+    defer a_svd.deinit();
+    var u_svd = try blazt.Matrix(f32, .row_major).init(alloc, m_svd, k_svd);
+    defer u_svd.deinit();
+    var vt_svd = try blazt.Matrix(f32, .row_major).init(alloc, k_svd, n_svd);
+    defer vt_svd.deinit();
+    const s_svd = try alloc.alloc(f32, k_svd);
+    defer alloc.free(s_svd);
+
+    for (a0_svd.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 17 + 3) % 1024)))) * @as(f32, 0.001);
+
+    var res_svd = try blazt.bench.run(alloc, "ops.svd(f32,row_major)", .{
+        .warmup_iters = 1,
+        .samples = 5,
+        .inner_iters = 1,
+    }, svdOps, .{ m_svd, n_svd, a0_svd, &a_svd, s_svd, &u_svd, &vt_svd });
+    defer res_svd.deinit();
+    res_svd.sortInPlace();
+    const svd_p50 = blazt.bench.medianSortedNs(res_svd.samples_ns);
+    const svd_p90 = blazt.bench.percentileSortedNs(res_svd.samples_ns, 0.90);
+    const svd_p99 = blazt.bench.percentileSortedNs(res_svd.samples_ns, 0.99);
+
+    // Coarse SVD flops estimate: O(m*n^2) for m>=n.
+    const svd_flops: u64 = @intCast(@as(u128, 8) * @as(u128, m_svd) * @as(u128, n_svd) * @as(u128, n_svd));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_svd.name,
+            svd_p50, blazt.bench.gflops(svd_flops, svd_p50),
+            svd_p90, blazt.bench.gflops(svd_flops, svd_p90),
+            svd_p99, blazt.bench.gflops(svd_flops, svd_p99),
         },
     );
     try out_gemm.flush();
