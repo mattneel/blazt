@@ -1,3 +1,7 @@
+//! Parallel BLAS routines built on top of `blazt.ThreadPool`.
+//!
+//! The API mirrors `blazt.ops` where applicable, but accepts a thread pool to schedule work.
+
 const std = @import("std");
 const types = @import("types.zig");
 const matrix = @import("matrix.zig");
@@ -7,6 +11,13 @@ const ops = @import("ops.zig").ops;
 const thread_pool_mod = @import("thread_pool.zig");
 
 pub const parallel = struct {
+    /// Parallel GEMM: `C := alpha*A*B + beta*C`.
+    ///
+    /// Currently specialized for:
+    /// - `layout = .row_major`
+    /// - `trans_a = .no_trans`, `trans_b = .no_trans` (other modes fall back to `ops.gemm`)
+    ///
+    /// Work is split across column panels to avoid write contention.
     pub fn gemm(
         comptime T: type,
         trans_a: types.Trans,

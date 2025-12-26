@@ -10,6 +10,9 @@ const build_options = @import("build_options");
 
 extern fn blazt_nt_memcpy(dst: [*]u8, src: [*]const u8, n: usize) callconv(.c) void;
 
+/// BLAS and LAPACK-style operations.
+///
+/// Unless otherwise noted, routines are allocation-free and operate on caller-owned buffers.
 pub const ops = struct {
     // Level 1 (stubs; implemented incrementally)
     /// Copy `n` elements from `x` into `y`.

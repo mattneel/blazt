@@ -2,46 +2,69 @@
 const std = @import("std");
 
 pub const memory = @import("memory.zig");
+/// Cache-line size in bytes used for internal alignment decisions.
 pub const CacheLine = memory.CacheLine;
+/// Allocate a cache-line aligned slice.
 pub const allocAligned = memory.allocAligned;
+/// Runtime alignment assertion + aligned pointer cast (internal invariant helper).
 pub const ensureAligned = memory.ensureAligned;
 
 pub const matrix = @import("matrix.zig");
+/// Matrix storage order (`.row_major` / `.col_major`).
 pub const Layout = matrix.Layout;
+/// Dense matrix type: `blazt.Matrix(T, layout)`.
 pub const Matrix = matrix.Matrix;
 
 pub const types = @import("types.zig");
+/// Transpose selector for BLAS/LAPACK routines.
 pub const Trans = types.Trans;
+/// Triangle selector for symmetric/Hermitian/triangular matrices.
 pub const UpLo = types.UpLo;
+/// Side selector (left/right) for certain BLAS3 routines.
 pub const Side = types.Side;
+/// Diagonal selector (unit/non-unit) for triangular routines.
 pub const Diag = types.Diag;
 
 pub const errors = @import("errors.zig");
+/// LU factorization error set.
 pub const LuError = errors.LuError;
+/// Cholesky factorization error set.
 pub const CholeskyError = errors.CholeskyError;
+/// Triangular solve (vector) error set.
 pub const TrsvError = errors.TrsvError;
+/// Triangular solve (matrix) error set.
 pub const TrsmError = errors.TrsmError;
+/// SVD error set.
 pub const SvdError = errors.SvdError;
+/// Eigen decomposition error set.
 pub const EigError = errors.EigError;
 
+/// BLAS/LAPACK operations (single-threaded).
 pub const ops = @import("ops.zig").ops;
+/// Parallel BLAS routines (ThreadPool-backed).
 pub const parallel = @import("parallel.zig").parallel;
 
 pub const cpu = @import("cpu.zig");
+/// Build-time/native CPU feature + cache info.
 pub const CpuInfo = cpu.CpuInfo;
 
 pub const simd = @import("simd.zig");
+/// SVE utilities and dispatch scaffolding.
 pub const sve = @import("sve.zig").sve;
 
+/// GEMM micro/macro-kernels and tuning utilities.
 pub const gemm = @import("gemm.zig");
 
+/// Benchmark harness helpers.
 pub const bench = @import("bench.zig");
+/// Optional oracle integration (external BLAS) for parity testing.
 pub const oracle = @import("oracle.zig");
 
 /// Generated build-time configuration knobs (from `build.zig`).
 pub const build_options = @import("build_options");
 
 pub const thread_pool = @import("thread_pool.zig");
+/// Work-stealing thread pool used by `blazt.parallel`.
 pub const ThreadPool = thread_pool.ThreadPool;
 
 // Avoid name ambiguity inside `GemmBuilder` methods (which include a method named `parallel`).
@@ -130,6 +153,7 @@ pub fn GemmBuilder(comptime T: type) type {
     };
 }
 
+/// Example entrypoint used by the default `zig build run` target.
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
     // are implementing gzip, then only the compressed bytes should be sent to
