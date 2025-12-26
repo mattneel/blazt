@@ -392,9 +392,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res.name,
-            p50, blazt.bench.gflops(flops, p50),
-            p90, blazt.bench.gflops(flops, p90),
-            p99, blazt.bench.gflops(flops, p99),
+            p50,
+            blazt.bench.gflops(flops, p50),
+            p90,
+            blazt.bench.gflops(flops, p90),
+            p99,
+            blazt.bench.gflops(flops, p99),
         },
     );
     try out.flush();
@@ -428,9 +431,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_axpy.name,
-            a_p50, blazt.bench.gflops(axpy_flops, a_p50),
-            a_p90, blazt.bench.gflops(axpy_flops, a_p90),
-            a_p99, blazt.bench.gflops(axpy_flops, a_p99),
+            a_p50,
+            blazt.bench.gflops(axpy_flops, a_p50),
+            a_p90,
+            blazt.bench.gflops(axpy_flops, a_p90),
+            a_p99,
+            blazt.bench.gflops(axpy_flops, a_p99),
         },
     );
     try out_axpy.flush();
@@ -463,9 +469,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_dot.name,
-            d_p50, blazt.bench.gflops(dot_flops, d_p50),
-            d_p90, blazt.bench.gflops(dot_flops, d_p90),
-            d_p99, blazt.bench.gflops(dot_flops, d_p99),
+            d_p50,
+            blazt.bench.gflops(dot_flops, d_p50),
+            d_p90,
+            blazt.bench.gflops(dot_flops, d_p90),
+            d_p99,
+            blazt.bench.gflops(dot_flops, d_p99),
         },
     );
     try out_dot.flush();
@@ -507,9 +516,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_gemv.name,
-            gv_p50, blazt.bench.gflops(gemv_flops, gv_p50),
-            gv_p90, blazt.bench.gflops(gemv_flops, gv_p90),
-            gv_p99, blazt.bench.gflops(gemv_flops, gv_p99),
+            gv_p50,
+            blazt.bench.gflops(gemv_flops, gv_p50),
+            gv_p90,
+            blazt.bench.gflops(gemv_flops, gv_p90),
+            gv_p99,
+            blazt.bench.gflops(gemv_flops, gv_p99),
         },
     );
     try out_gemv.flush();
@@ -546,9 +558,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_ger.name,
-            gr_p50, blazt.bench.gflops(ger_flops, gr_p50),
-            gr_p90, blazt.bench.gflops(ger_flops, gr_p90),
-            gr_p99, blazt.bench.gflops(ger_flops, gr_p99),
+            gr_p50,
+            blazt.bench.gflops(ger_flops, gr_p50),
+            gr_p90,
+            blazt.bench.gflops(ger_flops, gr_p90),
+            gr_p99,
+            blazt.bench.gflops(ger_flops, gr_p99),
         },
     );
     try out_ger.flush();
@@ -586,9 +601,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_trmv.name,
-            tm_p50, blazt.bench.gflops(trmv_flops, tm_p50),
-            tm_p90, blazt.bench.gflops(trmv_flops, tm_p90),
-            tm_p99, blazt.bench.gflops(trmv_flops, tm_p99),
+            tm_p50,
+            blazt.bench.gflops(trmv_flops, tm_p50),
+            tm_p90,
+            blazt.bench.gflops(trmv_flops, tm_p90),
+            tm_p99,
+            blazt.bench.gflops(trmv_flops, tm_p99),
         },
     );
     try out_trmv.flush();
@@ -614,9 +632,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_trsv.name,
-            ts_p50, blazt.bench.gflops(trsv_flops, ts_p50),
-            ts_p90, blazt.bench.gflops(trsv_flops, ts_p90),
-            ts_p99, blazt.bench.gflops(trsv_flops, ts_p99),
+            ts_p50,
+            blazt.bench.gflops(trsv_flops, ts_p50),
+            ts_p90,
+            blazt.bench.gflops(trsv_flops, ts_p90),
+            ts_p99,
+            blazt.bench.gflops(trsv_flops, ts_p99),
         },
     );
     try out_trsv.flush();
@@ -660,9 +681,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_symv.name,
-            sy_p50, blazt.bench.gflops(symv_flops, sy_p50),
-            sy_p90, blazt.bench.gflops(symv_flops, sy_p90),
-            sy_p99, blazt.bench.gflops(symv_flops, sy_p99),
+            sy_p50,
+            blazt.bench.gflops(symv_flops, sy_p50),
+            sy_p90,
+            blazt.bench.gflops(symv_flops, sy_p90),
+            sy_p99,
+            blazt.bench.gflops(symv_flops, sy_p99),
         },
     );
     try out_symv.flush();
@@ -714,9 +738,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_hemv.name,
-            hy_p50, blazt.bench.gflops(hemv_flops, hy_p50),
-            hy_p90, blazt.bench.gflops(hemv_flops, hy_p90),
-            hy_p99, blazt.bench.gflops(hemv_flops, hy_p99),
+            hy_p50,
+            blazt.bench.gflops(hemv_flops, hy_p50),
+            hy_p90,
+            blazt.bench.gflops(hemv_flops, hy_p90),
+            hy_p99,
+            blazt.bench.gflops(hemv_flops, hy_p99),
         },
     );
     try out_hemv.flush();
@@ -748,9 +775,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_asum.name,
-            as_p50, blazt.bench.gibPerSec(asum_bytes, as_p50),
-            as_p90, blazt.bench.gibPerSec(asum_bytes, as_p90),
-            as_p99, blazt.bench.gibPerSec(asum_bytes, as_p99),
+            as_p50,
+            blazt.bench.gibPerSec(asum_bytes, as_p50),
+            as_p90,
+            blazt.bench.gibPerSec(asum_bytes, as_p90),
+            as_p99,
+            blazt.bench.gibPerSec(asum_bytes, as_p99),
         },
     );
     try out_asum.flush();
@@ -773,9 +803,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_nrm2.name,
-            nr_p50, blazt.bench.gibPerSec(asum_bytes, nr_p50),
-            nr_p90, blazt.bench.gibPerSec(asum_bytes, nr_p90),
-            nr_p99, blazt.bench.gibPerSec(asum_bytes, nr_p99),
+            nr_p50,
+            blazt.bench.gibPerSec(asum_bytes, nr_p50),
+            nr_p90,
+            blazt.bench.gibPerSec(asum_bytes, nr_p90),
+            nr_p99,
+            blazt.bench.gibPerSec(asum_bytes, nr_p99),
         },
     );
     try out_nrm2.flush();
@@ -798,9 +831,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_iamax.name,
-            imax_p50, blazt.bench.gibPerSec(asum_bytes, imax_p50),
-            imax_p90, blazt.bench.gibPerSec(asum_bytes, imax_p90),
-            imax_p99, blazt.bench.gibPerSec(asum_bytes, imax_p99),
+            imax_p50,
+            blazt.bench.gibPerSec(asum_bytes, imax_p50),
+            imax_p90,
+            blazt.bench.gibPerSec(asum_bytes, imax_p90),
+            imax_p99,
+            blazt.bench.gibPerSec(asum_bytes, imax_p99),
         },
     );
     try out_iamax.flush();
@@ -822,9 +858,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_iamin.name,
-            imin_p50, blazt.bench.gibPerSec(asum_bytes, imin_p50),
-            imin_p90, blazt.bench.gibPerSec(asum_bytes, imin_p90),
-            imin_p99, blazt.bench.gibPerSec(asum_bytes, imin_p99),
+            imin_p50,
+            blazt.bench.gibPerSec(asum_bytes, imin_p50),
+            imin_p90,
+            blazt.bench.gibPerSec(asum_bytes, imin_p90),
+            imin_p99,
+            blazt.bench.gibPerSec(asum_bytes, imin_p99),
         },
     );
     try out_iamin.flush();
@@ -858,9 +897,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_copy.name,
-            c_p50, blazt.bench.gibPerSec(bytes, c_p50),
-            c_p90, blazt.bench.gibPerSec(bytes, c_p90),
-            c_p99, blazt.bench.gibPerSec(bytes, c_p99),
+            c_p50,
+            blazt.bench.gibPerSec(bytes, c_p50),
+            c_p90,
+            blazt.bench.gibPerSec(bytes, c_p90),
+            c_p99,
+            blazt.bench.gibPerSec(bytes, c_p99),
         },
     );
     try out2.flush();
@@ -895,9 +937,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_scal.name,
-            s_p50, blazt.bench.gibPerSec(scal_bytes, s_p50),
-            s_p90, blazt.bench.gibPerSec(scal_bytes, s_p90),
-            s_p99, blazt.bench.gibPerSec(scal_bytes, s_p99),
+            s_p50,
+            blazt.bench.gibPerSec(scal_bytes, s_p50),
+            s_p90,
+            blazt.bench.gibPerSec(scal_bytes, s_p90),
+            s_p99,
+            blazt.bench.gibPerSec(scal_bytes, s_p99),
         },
     );
     try out3.flush();
@@ -931,9 +976,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GiB/s)\n  p90: {d} ns  ({d:.3} GiB/s)\n  p99: {d} ns  ({d:.3} GiB/s)\n",
         .{
             res_swap.name,
-            w_p50, blazt.bench.gibPerSec(swap_bytes, w_p50),
-            w_p90, blazt.bench.gibPerSec(swap_bytes, w_p90),
-            w_p99, blazt.bench.gibPerSec(swap_bytes, w_p99),
+            w_p50,
+            blazt.bench.gibPerSec(swap_bytes, w_p50),
+            w_p90,
+            blazt.bench.gibPerSec(swap_bytes, w_p90),
+            w_p99,
+            blazt.bench.gibPerSec(swap_bytes, w_p99),
         },
     );
     try out4.flush();
@@ -970,9 +1018,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_gemm.name,
-            gg_p50, blazt.bench.gflops(gemm_flops, gg_p50),
-            gg_p90, blazt.bench.gflops(gemm_flops, gg_p90),
-            gg_p99, blazt.bench.gflops(gemm_flops, gg_p99),
+            gg_p50,
+            blazt.bench.gflops(gemm_flops, gg_p50),
+            gg_p90,
+            blazt.bench.gflops(gemm_flops, gg_p90),
+            gg_p99,
+            blazt.bench.gflops(gemm_flops, gg_p99),
         },
     );
     try out_gemm.flush();
@@ -1005,9 +1056,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_syrk.name,
-            syrk_p50, blazt.bench.gflops(syrk_flops, syrk_p50),
-            syrk_p90, blazt.bench.gflops(syrk_flops, syrk_p90),
-            syrk_p99, blazt.bench.gflops(syrk_flops, syrk_p99),
+            syrk_p50,
+            blazt.bench.gflops(syrk_flops, syrk_p50),
+            syrk_p90,
+            blazt.bench.gflops(syrk_flops, syrk_p90),
+            syrk_p99,
+            blazt.bench.gflops(syrk_flops, syrk_p99),
         },
     );
     try out_gemm.flush();
@@ -1043,9 +1097,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_syr2k.name,
-            syr2k_p50, blazt.bench.gflops(syr2k_flops, syr2k_p50),
-            syr2k_p90, blazt.bench.gflops(syr2k_flops, syr2k_p90),
-            syr2k_p99, blazt.bench.gflops(syr2k_flops, syr2k_p99),
+            syr2k_p50,
+            blazt.bench.gflops(syr2k_flops, syr2k_p50),
+            syr2k_p90,
+            blazt.bench.gflops(syr2k_flops, syr2k_p90),
+            syr2k_p99,
+            blazt.bench.gflops(syr2k_flops, syr2k_p99),
         },
     );
     try out_gemm.flush();
@@ -1090,9 +1147,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_symm.name,
-            symm_p50, blazt.bench.gflops(symm_flops, symm_p50),
-            symm_p90, blazt.bench.gflops(symm_flops, symm_p90),
-            symm_p99, blazt.bench.gflops(symm_flops, symm_p99),
+            symm_p50,
+            blazt.bench.gflops(symm_flops, symm_p50),
+            symm_p90,
+            blazt.bench.gflops(symm_flops, symm_p90),
+            symm_p99,
+            blazt.bench.gflops(symm_flops, symm_p99),
         },
     );
     try out_gemm.flush();
@@ -1141,9 +1201,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_trmm.name,
-            trmm_p50, blazt.bench.gflops(trmm_flops, trmm_p50),
-            trmm_p90, blazt.bench.gflops(trmm_flops, trmm_p90),
-            trmm_p99, blazt.bench.gflops(trmm_flops, trmm_p99),
+            trmm_p50,
+            blazt.bench.gflops(trmm_flops, trmm_p50),
+            trmm_p90,
+            blazt.bench.gflops(trmm_flops, trmm_p90),
+            trmm_p99,
+            blazt.bench.gflops(trmm_flops, trmm_p99),
         },
     );
     try out_gemm.flush();
@@ -1165,9 +1228,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_trsm.name,
-            trsm_p50, blazt.bench.gflops(trsm_flops, trsm_p50),
-            trsm_p90, blazt.bench.gflops(trsm_flops, trsm_p90),
-            trsm_p99, blazt.bench.gflops(trsm_flops, trsm_p99),
+            trsm_p50,
+            blazt.bench.gflops(trsm_flops, trsm_p50),
+            trsm_p90,
+            blazt.bench.gflops(trsm_flops, trsm_p90),
+            trsm_p99,
+            blazt.bench.gflops(trsm_flops, trsm_p99),
         },
     );
     try out_gemm.flush();
@@ -1205,9 +1271,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_lu.name,
-            lu_p50, blazt.bench.gflops(lu_flops, lu_p50),
-            lu_p90, blazt.bench.gflops(lu_flops, lu_p90),
-            lu_p99, blazt.bench.gflops(lu_flops, lu_p99),
+            lu_p50,
+            blazt.bench.gflops(lu_flops, lu_p50),
+            lu_p90,
+            blazt.bench.gflops(lu_flops, lu_p90),
+            lu_p99,
+            blazt.bench.gflops(lu_flops, lu_p99),
         },
     );
     try out_gemm.flush();
@@ -1254,9 +1323,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_chol.name,
-            chol_p50, blazt.bench.gflops(chol_flops, chol_p50),
-            chol_p90, blazt.bench.gflops(chol_flops, chol_p90),
-            chol_p99, blazt.bench.gflops(chol_flops, chol_p99),
+            chol_p50,
+            blazt.bench.gflops(chol_flops, chol_p50),
+            chol_p90,
+            blazt.bench.gflops(chol_flops, chol_p90),
+            chol_p99,
+            blazt.bench.gflops(chol_flops, chol_p99),
         },
     );
     try out_gemm.flush();
@@ -1292,9 +1364,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_qr.name,
-            qr_p50, blazt.bench.gflops(qr_flops, qr_p50),
-            qr_p90, blazt.bench.gflops(qr_flops, qr_p90),
-            qr_p99, blazt.bench.gflops(qr_flops, qr_p99),
+            qr_p50,
+            blazt.bench.gflops(qr_flops, qr_p50),
+            qr_p90,
+            blazt.bench.gflops(qr_flops, qr_p90),
+            qr_p99,
+            blazt.bench.gflops(qr_flops, qr_p99),
         },
     );
     try out_gemm.flush();
@@ -1336,9 +1411,12 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_svd.name,
-            svd_p50, blazt.bench.gflops(svd_flops, svd_p50),
-            svd_p90, blazt.bench.gflops(svd_flops, svd_p90),
-            svd_p99, blazt.bench.gflops(svd_flops, svd_p99),
+            svd_p50,
+            blazt.bench.gflops(svd_flops, svd_p50),
+            svd_p90,
+            blazt.bench.gflops(svd_flops, svd_p90),
+            svd_p99,
+            blazt.bench.gflops(svd_flops, svd_p99),
         },
     );
     try out_gemm.flush();
@@ -1385,27 +1463,42 @@ pub fn main() !void {
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{
             res_eig.name,
-            eig_p50, blazt.bench.gflops(eig_flops, eig_p50),
-            eig_p90, blazt.bench.gflops(eig_flops, eig_p90),
-            eig_p99, blazt.bench.gflops(eig_flops, eig_p99),
+            eig_p50,
+            blazt.bench.gflops(eig_flops, eig_p50),
+            eig_p90,
+            blazt.bench.gflops(eig_flops, eig_p90),
+            eig_p99,
+            blazt.bench.gflops(eig_flops, eig_p99),
         },
     );
     try out_gemm.flush();
 
     // Parallel variants (fixed-size pools so we don't include init costs).
-    var pool2 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 2 });
-    defer pool2.deinit();
-    var pool4 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 4 });
-    defer pool4.deinit();
-    var pool8 = try blazt.ThreadPool.init(alloc, .{ .thread_count = 8 });
-    defer pool8.deinit();
+    //
+    // Scaling story points (hyperthreading span): 8,12,16,24,28,32. Keep 2/4 for baseline.
+    const cpu_threads: usize = std.Thread.getCpuCount() catch 8;
+    const max_threads: usize = @min(@as(usize, 32), @max(cpu_threads, 1));
 
-    inline for (.{ .{ "parallel.gemm(f32,row_major,threads=2)", &pool2 }, .{ "parallel.gemm(f32,row_major,threads=4)", &pool4 }, .{ "parallel.gemm(f32,row_major,threads=8)", &pool8 } }) |cfg| {
-        var res_pg = try blazt.bench.run(alloc, cfg[0], .{
+    const desired_threads = [_]usize{ 2, 4, 8, 12, 16, 24, 28, 32 };
+    var last_threads: usize = 0;
+    for (desired_threads) |tc| {
+        const threads: usize = if (tc == 32) max_threads else tc;
+        if (threads <= 1) continue;
+        if (threads > cpu_threads) continue;
+        if (threads == last_threads) continue;
+        last_threads = threads;
+
+        var pool = try blazt.ThreadPool.init(alloc, .{ .thread_count = threads });
+        defer pool.deinit();
+
+        var name_buf: [64]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "parallel.gemm(f32,row_major,threads={d})", .{threads});
+
+        var res_pg = try blazt.bench.run(alloc, name, .{
             .warmup_iters = 2,
             .samples = 10,
             .inner_iters = 1,
-        }, gemmParallelOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm, cfg[1] });
+        }, gemmParallelOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm, &pool });
         defer res_pg.deinit();
         res_pg.sortInPlace();
         const pg_p50 = blazt.bench.medianSortedNs(res_pg.samples_ns);
@@ -1415,41 +1508,12 @@ pub fn main() !void {
             "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
             .{
                 res_pg.name,
-                pg_p50, blazt.bench.gflops(gemm_flops, pg_p50),
-                pg_p90, blazt.bench.gflops(gemm_flops, pg_p90),
-                pg_p99, blazt.bench.gflops(gemm_flops, pg_p99),
-            },
-        );
-        try out_gemm.flush();
-    }
-
-    // "For shits and gigs": run a bigger pool (32 threads, or whatever the platform max is if < 32).
-    const cpu_threads: usize = std.Thread.getCpuCount() catch 8;
-    const threads32: usize = @min(@as(usize, 32), @max(cpu_threads, 1));
-    if (threads32 > 1 and threads32 != 2 and threads32 != 4 and threads32 != 8) {
-        var pool32 = try blazt.ThreadPool.init(alloc, .{ .thread_count = threads32 });
-        defer pool32.deinit();
-
-        const name32 = try std.fmt.allocPrint(alloc, "parallel.gemm(f32,row_major,threads={d})", .{threads32});
-        defer alloc.free(name32);
-
-        var res_pg32 = try blazt.bench.run(alloc, name32, .{
-            .warmup_iters = 2,
-            .samples = 10,
-            .inner_iters = 1,
-        }, gemmParallelOps, .{ m_gemm, n_gemm, k_gemm, a_gemm, b_gemm, &c_gemm, &pool32 });
-        defer res_pg32.deinit();
-        res_pg32.sortInPlace();
-        const p50_32 = blazt.bench.medianSortedNs(res_pg32.samples_ns);
-        const p90_32 = blazt.bench.percentileSortedNs(res_pg32.samples_ns, 0.90);
-        const p99_32 = blazt.bench.percentileSortedNs(res_pg32.samples_ns, 0.99);
-        try out_gemm.print(
-            "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
-            .{
-                res_pg32.name,
-                p50_32, blazt.bench.gflops(gemm_flops, p50_32),
-                p90_32, blazt.bench.gflops(gemm_flops, p90_32),
-                p99_32, blazt.bench.gflops(gemm_flops, p99_32),
+                pg_p50,
+                blazt.bench.gflops(gemm_flops, pg_p50),
+                pg_p90,
+                blazt.bench.gflops(gemm_flops, pg_p90),
+                pg_p99,
+                blazt.bench.gflops(gemm_flops, pg_p99),
             },
         );
         try out_gemm.flush();
@@ -1515,9 +1579,13 @@ pub fn main() !void {
             "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s, {d:.1}% peak)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
             .{
                 res_gemm_cm.name,
-                cm_p50, p50_g, pct,
-                cm_p90, blazt.bench.gflops(gemm_flops, cm_p90),
-                cm_p99, blazt.bench.gflops(gemm_flops, cm_p99),
+                cm_p50,
+                p50_g,
+                pct,
+                cm_p90,
+                blazt.bench.gflops(gemm_flops, cm_p90),
+                cm_p99,
+                blazt.bench.gflops(gemm_flops, cm_p99),
             },
         );
     } else {
@@ -1525,9 +1593,12 @@ pub fn main() !void {
             "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
             .{
                 res_gemm_cm.name,
-                cm_p50, blazt.bench.gflops(gemm_flops, cm_p50),
-                cm_p90, blazt.bench.gflops(gemm_flops, cm_p90),
-                cm_p99, blazt.bench.gflops(gemm_flops, cm_p99),
+                cm_p50,
+                blazt.bench.gflops(gemm_flops, cm_p50),
+                cm_p90,
+                blazt.bench.gflops(gemm_flops, cm_p90),
+                cm_p99,
+                blazt.bench.gflops(gemm_flops, cm_p99),
             },
         );
     }
@@ -1565,9 +1636,12 @@ pub fn main() !void {
             "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
             .{
                 res_gemm_or.name,
-                g_or_p50, blazt.bench.gflops(flops_or, g_or_p50),
-                g_or_p90, blazt.bench.gflops(flops_or, g_or_p90),
-                g_or_p99, blazt.bench.gflops(flops_or, g_or_p99),
+                g_or_p50,
+                blazt.bench.gflops(flops_or, g_or_p50),
+                g_or_p90,
+                blazt.bench.gflops(flops_or, g_or_p90),
+                g_or_p99,
+                blazt.bench.gflops(flops_or, g_or_p99),
             },
         );
         try out_gemm.flush();
@@ -1590,9 +1664,12 @@ pub fn main() !void {
             "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
             .{
                 res_or.name,
-                or_p50, blazt.bench.gflops(flops_or, or_p50),
-                or_p90, blazt.bench.gflops(flops_or, or_p90),
-                or_p99, blazt.bench.gflops(flops_or, or_p99),
+                or_p50,
+                blazt.bench.gflops(flops_or, or_p50),
+                or_p90,
+                blazt.bench.gflops(flops_or, or_p90),
+                or_p99,
+                blazt.bench.gflops(flops_or, or_p99),
             },
         );
         try out_gemm.flush();
@@ -1601,5 +1678,3 @@ pub fn main() !void {
     try benchCacheHotAfterZero(alloc, out_gemm);
     try out_gemm.flush();
 }
-
-
