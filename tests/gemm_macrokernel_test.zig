@@ -42,10 +42,12 @@ fn fillMatDeterministic(comptime layout: blazt.Layout, mat: *blazt.Matrix(f32, l
 
 test "gemm.gemmBlocked (col_major, no_trans) matches reference for tail shapes (beta=0 NaN-safe)" {
     const P = blazt.gemm.computeTileParams(f32);
+    const PB_STRIDE_ELEMS = blazt.gemm.packBPanelStrideElems(f32, P);
+    const PB_PANELS = blazt.gemm.packBPanelCount(f32, P);
 
     const pack_a = try blazt.allocAligned(std.testing.allocator, f32, P.MR * P.KC);
     defer std.testing.allocator.free(pack_a);
-    const pack_b = try blazt.allocAligned(std.testing.allocator, f32, P.NR * P.KC);
+    const pack_b = try blazt.allocAligned(std.testing.allocator, f32, PB_STRIDE_ELEMS * PB_PANELS);
     defer std.testing.allocator.free(pack_b);
 
     const m: usize = 7;
@@ -81,10 +83,12 @@ test "gemm.gemmBlocked (col_major, no_trans) matches reference for tail shapes (
 
 test "gemm.gemmBlocked accumulates into C when beta=1" {
     const P = blazt.gemm.computeTileParams(f32);
+    const PB_STRIDE_ELEMS = blazt.gemm.packBPanelStrideElems(f32, P);
+    const PB_PANELS = blazt.gemm.packBPanelCount(f32, P);
 
     const pack_a = try blazt.allocAligned(std.testing.allocator, f32, P.MR * P.KC);
     defer std.testing.allocator.free(pack_a);
-    const pack_b = try blazt.allocAligned(std.testing.allocator, f32, P.NR * P.KC);
+    const pack_b = try blazt.allocAligned(std.testing.allocator, f32, PB_STRIDE_ELEMS * PB_PANELS);
     defer std.testing.allocator.free(pack_b);
 
     const m: usize = 9;

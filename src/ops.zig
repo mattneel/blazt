@@ -1447,8 +1447,10 @@ pub const ops = struct {
         // Fast path: use the cache-blocked kernel for the common case.
         if (eff_a == .no_trans and eff_b == .no_trans) {
             const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
+                const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+                const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
             var pack_a: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
-            var pack_b: [P.NR * P.KC]T align(memory.CacheLine) = undefined;
+                var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
 
             switch (layout) {
                 .col_major => {

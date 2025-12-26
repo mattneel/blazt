@@ -243,6 +243,29 @@ pub fn computeTileParamsWithTuning(comptime T: type, comptime tuning: GemmTuning
     };
 }
 
+/// Number of B micro-panels to batch in the macro-kernel.
+///
+/// Batching reduces redundant A packing work: we pack one A micro-panel and reuse it across
+/// multiple NR-wide micro-panels of B.
+///
+/// This must stay modest because pack buffers are stack-allocated in some call paths.
+pub fn packBPanelCount(comptime T: type, P: TileParams) usize {
+    const max_bytes: usize = 256 * 1024; // conservative per-call stack budget for packed B
+    const stride_elems: usize = packBPanelStrideElems(T, P);
+    const stride_bytes: usize = stride_elems * @sizeOf(T);
+    if (stride_bytes == 0) return 1;
+    const ratio: usize = max_bytes / stride_bytes;
+    return clamp(ratio, 1, 8);
+}
+
+/// Stride (in elements) between consecutive packed B micro-panels within `pack_b`.
+///
+/// We round up to a cache-line multiple so each micro-panel starts cache-line aligned.
+pub fn packBPanelStrideElems(comptime T: type, P: TileParams) usize {
+    const align_elems: usize = memory.CacheLine / @sizeOf(T);
+    return roundUpMultiple(P.NR * P.KC, align_elems);
+}
+
 /// Register-blocked GEMM micro-kernel for packed panels.
 ///
 /// Computes an `MR x NR` block:
@@ -394,7 +417,9 @@ pub fn microKernelPartial(
 /// - `A` (m×k), `B` (k×n), `C` (m×n)
 /// - all matrices stored column-major (`layout = .col_major`)
 ///
-/// **No hidden allocations**: callers must provide cache-line aligned `pack_a` and `pack_b` buffers.
+/// **No hidden allocations**: callers must provide cache-line aligned pack buffers:
+/// - `pack_a` length >= `P.MR * P.KC`
+/// - `pack_b` length >= `packBPanelStrideElems(T, P) * packBPanelCount(T, P)`
 pub fn gemmBlocked(
     comptime T: type,
     m: usize,
@@ -471,7 +496,9 @@ pub fn gemmBlockedRange(
     const NC: usize = P.NC;
 
     std.debug.assert(pack_a.len >= MR * KC);
-    std.debug.assert(pack_b.len >= NR * KC);
+    const PB_STRIDE_ELEMS: usize = comptime packBPanelStrideElems(T, P);
+    const PB_PANELS: usize = comptime packBPanelCount(T, P);
+    std.debug.assert(pack_b.len >= PB_STRIDE_ELEMS * PB_PANELS);
 
     const rs_c: usize = 1;
     const cs_c: usize = c.stride;
@@ -485,14 +512,25 @@ pub fn gemmBlockedRange(
             const kc_cur = @min(KC, k - pc);
             const beta_block: T = if (pc == 0) beta else @as(T, 1);
 
-            // Iterate NR-wide panels of B.
-            var jr: usize = 0;
-            while (jr < nc_cur) : (jr += NR) {
-                const nr_cur = @min(NR, nc_cur - jr);
+            // Iterate NR-wide panels of B, but batch several of them so we can reuse each packed A micro-panel
+            // across multiple B micro-panels (reduces redundant A packing work).
+            const nr_block_cols: usize = NR * PB_PANELS;
+            var jr0: usize = 0;
+            while (jr0 < nc_cur) : (jr0 += nr_block_cols) {
+                const rem_cols: usize = nc_cur - jr0;
+                const jb_cur: usize = @min(PB_PANELS, (rem_cols + NR - 1) / NR);
 
-                // Pack one KC×NR micro-panel of B.
-                const pb = pack_b[0 .. NR * kc_cur];
-                packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+                // Pack JB micro-panels of B into pack_b (each panel starts cache-line aligned).
+                var bj: usize = 0;
+                while (bj < jb_cur) : (bj += 1) {
+                    const jr: usize = jr0 + bj * NR;
+                    const nr_cur = @min(NR, nc_cur - jr);
+
+                    const pb_ptr_unaligned: [*]T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                    const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                    const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
+                    packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+                }
 
                 var ic: usize = 0;
                 while (ic < m) : (ic += MC) {
@@ -502,13 +540,20 @@ pub fn gemmBlockedRange(
                     while (ir < mc_cur) : (ir += MR) {
                         const mr_cur = @min(MR, mc_cur - ir);
 
-                        // Pack one MR×KC micro-panel of A.
+                        // Pack one MR×KC micro-panel of A (reused across JB B panels).
                         const pa = pack_a[0 .. MR * kc_cur];
                         packA(T, .col_major, MR, kc_cur, mr_cur, a, ic + ir, pc, pa);
 
-                        // Compute C block at (ic+ir, jc+jr).
-                        const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
-                        microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb.ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                        bj = 0;
+                        while (bj < jb_cur) : (bj += 1) {
+                            const jr: usize = jr0 + bj * NR;
+                            const nr_cur = @min(NR, nc_cur - jr);
+
+                            const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
+                            const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                            const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
+                            microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                        }
                     }
                 }
             }
