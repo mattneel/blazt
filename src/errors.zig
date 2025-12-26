@@ -8,4 +8,6 @@ pub const TrsmError = error{ Singular };
 
 pub const SvdError = error{ NoConvergence };
 
+pub const EigError = error{ NoConvergence };
+
 

@@ -3502,6 +3502,133 @@ pub const ops = struct {
         }
     }
 
+    /// Eigen decomposition for a real **symmetric** matrix: `A = V * diag(w) * V^T`.
+    ///
+    /// - `a` is overwritten (used as workspace).
+    /// - `w` length >= `n` receives eigenvalues (descending).
+    /// - `v` must be `n×n` and receives eigenvectors as **columns**.
+    ///
+    /// Current implementation uses a Jacobi rotation method.
+    pub fn eig(
+        comptime T: type,
+        a: *matrix.Matrix(T, .row_major),
+        w: []T,
+        v: *matrix.Matrix(T, .row_major),
+    ) errors.EigError!void {
+        if (comptime @typeInfo(T) != .float) {
+            @compileError("ops.eig currently only supports floating-point types");
+        }
+
+        const n: usize = a.rows;
+        std.debug.assert(a.cols == n);
+        std.debug.assert(a.stride >= n);
+        std.debug.assert(w.len >= n);
+        std.debug.assert(v.rows == n and v.cols == n);
+        std.debug.assert(v.stride >= n);
+        if (n == 0) return;
+
+        // V := I
+        for (0..n) |i| {
+            const off = i * v.stride;
+            for (0..n) |j| v.data[off + j] = if (i == j) @as(T, 1) else @as(T, 0);
+        }
+
+        const eps: T = @sqrt(std.math.floatEps(T));
+        const max_sweeps: usize = 64 * n;
+
+        var sweep: usize = 0;
+        while (sweep < max_sweeps) : (sweep += 1) {
+            // Find largest off-diagonal element.
+            var p: usize = 0;
+            var q: usize = 1;
+            var max_ab: T = @as(T, 0);
+            for (0..n) |i| {
+                for (i + 1..n) |j| {
+                    const ab = @abs(a.data[i * a.stride + j]);
+                    if (ab > max_ab) {
+                        max_ab = ab;
+                        p = i;
+                        q = j;
+                    }
+                }
+            }
+
+            if (max_ab == @as(T, 0)) break;
+
+            const app = a.data[p * a.stride + p];
+            const aqq = a.data[q * a.stride + q];
+            const apq = a.data[p * a.stride + q];
+
+            if (@abs(apq) <= eps * (@abs(app) + @abs(aqq))) break;
+
+            // Jacobi rotation to zero apq.
+            const tau: T = (aqq - app) / (@as(T, 2) * apq);
+            const sign_tau: T = if (tau >= @as(T, 0)) @as(T, 1) else @as(T, -1);
+            const t: T = sign_tau / (@abs(tau) + @sqrt(@as(T, 1) + tau * tau));
+            const c: T = @as(T, 1) / @sqrt(@as(T, 1) + t * t);
+            const s_: T = c * t;
+
+            // Update A = J^T A J (symmetric).
+            const app_new: T = c * c * app - @as(T, 2) * c * s_ * apq + s_ * s_ * aqq;
+            const aqq_new: T = s_ * s_ * app + @as(T, 2) * c * s_ * apq + c * c * aqq;
+            a.data[p * a.stride + p] = app_new;
+            a.data[q * a.stride + q] = aqq_new;
+            a.data[p * a.stride + q] = @as(T, 0);
+            a.data[q * a.stride + p] = @as(T, 0);
+
+            for (0..n) |i| {
+                if (i == p or i == q) continue;
+                const aip = a.data[i * a.stride + p];
+                const aiq = a.data[i * a.stride + q];
+                const new_ip: T = c * aip - s_ * aiq;
+                const new_iq: T = s_ * aip + c * aiq;
+                a.data[i * a.stride + p] = new_ip;
+                a.data[p * a.stride + i] = new_ip;
+                a.data[i * a.stride + q] = new_iq;
+                a.data[q * a.stride + i] = new_iq;
+            }
+
+            // Update eigenvectors: V := V * J
+            for (0..n) |i| {
+                const idx_p = i * v.stride + p;
+                const idx_q = i * v.stride + q;
+                const vip = v.data[idx_p];
+                const viq = v.data[idx_q];
+                v.data[idx_p] = c * vip - s_ * viq;
+                v.data[idx_q] = s_ * vip + c * viq;
+            }
+        }
+        if (sweep == max_sweeps) return error.NoConvergence;
+
+        // Eigenvalues are diagonal.
+        for (0..n) |i| w[i] = a.data[i * a.stride + i];
+
+        // Sort descending by eigenvalue; swap columns of V accordingly.
+        for (0..n) |i| {
+            var best: usize = i;
+            var best_v: T = w[i];
+            for (i + 1..n) |j| {
+                if (w[j] > best_v) {
+                    best_v = w[j];
+                    best = j;
+                }
+            }
+            if (best == i) continue;
+
+            const tmpw = w[i];
+            w[i] = w[best];
+            w[best] = tmpw;
+
+            for (0..n) |r| {
+                const idx_i = r * v.stride + i;
+                const idx_b = r * v.stride + best;
+                const tmp = v.data[idx_i];
+                v.data[idx_i] = v.data[idx_b];
+                v.data[idx_b] = tmp;
+            }
+        }
+    }
+
     /// Index of the element with maximum absolute value.
     ///
     /// - **Tie-break**: first occurrence wins (lowest index).

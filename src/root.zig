@@ -22,6 +22,7 @@ pub const CholeskyError = errors.CholeskyError;
 pub const TrsvError = errors.TrsvError;
 pub const TrsmError = errors.TrsmError;
 pub const SvdError = errors.SvdError;
+pub const EigError = errors.EigError;
 
 pub const ops = @import("ops.zig").ops;
 pub const parallel = @import("parallel.zig").parallel;

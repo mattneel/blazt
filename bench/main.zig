@@ -170,6 +170,19 @@ fn svdOps(
     std.mem.doNotOptimizeAway(a.data[0]);
 }
 
+fn eigOps(
+    n: usize,
+    a0: blazt.Matrix(f32, .row_major),
+    a: *blazt.Matrix(f32, .row_major),
+    w: []f32,
+    v: *blazt.Matrix(f32, .row_major),
+) void {
+    _ = n;
+    @memcpy(a.data, a0.data);
+    _ = blazt.ops.eig(f32, a, w, v) catch unreachable;
+    std.mem.doNotOptimizeAway(w[0]);
+}
+
 fn gemmParallelOps(
     m: usize,
     n: usize,
@@ -1307,6 +1320,52 @@ pub fn main() !void {
             svd_p50, blazt.bench.gflops(svd_flops, svd_p50),
             svd_p90, blazt.bench.gflops(svd_flops, svd_p90),
             svd_p99, blazt.bench.gflops(svd_flops, svd_p99),
+        },
+    );
+    try out_gemm.flush();
+
+    // Eig bench (symmetric, row_major, f32). (Jacobi; keep size modest.)
+    const n_eig: usize = 128;
+    var a0_eig = try blazt.Matrix(f32, .row_major).init(alloc, n_eig, n_eig);
+    defer a0_eig.deinit();
+    var a_eig = try blazt.Matrix(f32, .row_major).init(alloc, n_eig, n_eig);
+    defer a_eig.deinit();
+    var v_eig = try blazt.Matrix(f32, .row_major).init(alloc, n_eig, n_eig);
+    defer v_eig.deinit();
+    const w_eig = try alloc.alloc(f32, n_eig);
+    defer alloc.free(w_eig);
+
+    // Build a symmetric matrix.
+    for (0..n_eig) |i| {
+        for (0..n_eig) |j| {
+            const base = @as(f32, @floatFromInt(@as(u32, @intCast(((i * 37 + j * 17 + 11) ^ 0x5bd1e995) % 1024)))) * @as(f32, 0.001);
+            if (i <= j) {
+                a0_eig.atPtr(i, j).* = base;
+            } else {
+                a0_eig.atPtr(i, j).* = a0_eig.at(j, i);
+            }
+        }
+    }
+
+    var res_eig = try blazt.bench.run(alloc, "ops.eig(f32,row_major,symmetric)", .{
+        .warmup_iters = 1,
+        .samples = 5,
+        .inner_iters = 1,
+    }, eigOps, .{ n_eig, a0_eig, &a_eig, w_eig, &v_eig });
+    defer res_eig.deinit();
+    res_eig.sortInPlace();
+    const eig_p50 = blazt.bench.medianSortedNs(res_eig.samples_ns);
+    const eig_p90 = blazt.bench.percentileSortedNs(res_eig.samples_ns, 0.90);
+    const eig_p99 = blazt.bench.percentileSortedNs(res_eig.samples_ns, 0.99);
+
+    const eig_flops: u64 = @intCast(@as(u128, 10) * @as(u128, n_eig) * @as(u128, n_eig) * @as(u128, n_eig));
+    try out_gemm.print(
+        "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
+        .{
+            res_eig.name,
+            eig_p50, blazt.bench.gflops(eig_flops, eig_p50),
+            eig_p90, blazt.bench.gflops(eig_flops, eig_p90),
+            eig_p99, blazt.bench.gflops(eig_flops, eig_p99),
         },
     );
     try out_gemm.flush();
