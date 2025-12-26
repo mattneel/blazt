@@ -347,6 +347,18 @@ pub fn main() !void {
 
     const alloc = gpa.allocator();
 
+    // Some decompositions (notably Jacobi SVD / Jacobi eig) are intentionally coarse and can take
+    // a very long time at larger sizes. Keep the default `zig build bench` run snappy, and
+    // allow opting into heavier sizes via env.
+    const lapack_heavy: bool = blk: {
+        const s = std.process.getEnvVarOwned(alloc, "BLAZT_BENCH_LAPACK_HEAVY") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => break :blk false,
+            else => return err,
+        };
+        defer alloc.free(s);
+        break :blk s.len != 0 and !std.mem.eql(u8, s, "0");
+    };
+
     const n: usize = 1 << 16;
     const x = try alloc.alloc(f32, n);
     defer alloc.free(x);
@@ -1219,7 +1231,11 @@ pub fn main() !void {
         }
     }
     // Symmetrize explicitly.
-    for (0..n_chol) |j| for (j + 1..n_chol) |i| a0_chol.atPtr(i, j).* = a0_chol.at(j, i);
+    for (0..n_chol) |j| {
+        for (j + 1..n_chol) |i| {
+            a0_chol.atPtr(i, j).* = a0_chol.at(j, i);
+        }
+    }
 
     var res_chol = try blazt.bench.run(alloc, "ops.cholesky(f32,row_major,lower)", .{
         .warmup_iters = 2,
@@ -1283,9 +1299,9 @@ pub fn main() !void {
     );
     try out_gemm.flush();
 
-    // SVD bench (row_major, economy, f32). (Jacobi; keep size modest.)
-    const m_svd: usize = 256;
-    const n_svd: usize = 128;
+    // SVD bench (row_major, economy, f32). (Jacobi; this is expensive.)
+    const m_svd: usize = if (lapack_heavy) 256 else 96;
+    const n_svd: usize = if (lapack_heavy) 128 else 48;
     const k_svd: usize = @min(m_svd, n_svd);
     var a0_svd = try blazt.Matrix(f32, .row_major).init(alloc, m_svd, n_svd);
     defer a0_svd.deinit();
@@ -1300,9 +1316,12 @@ pub fn main() !void {
 
     for (a0_svd.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(u32, @intCast((i * 17 + 3) % 1024)))) * @as(f32, 0.001);
 
+    if (lapack_heavy) {
+        std.debug.print("running ops.svd(f32,row_major) (heavy; set BLAZT_BENCH_LAPACK_HEAVY=0 to skip heavy sizes)\n", .{});
+    }
     var res_svd = try blazt.bench.run(alloc, "ops.svd(f32,row_major)", .{
-        .warmup_iters = 1,
-        .samples = 5,
+        .warmup_iters = if (lapack_heavy) 1 else 0,
+        .samples = if (lapack_heavy) 5 else 1,
         .inner_iters = 1,
     }, svdOps, .{ m_svd, n_svd, a0_svd, &a_svd, s_svd, &u_svd, &vt_svd });
     defer res_svd.deinit();
@@ -1324,8 +1343,8 @@ pub fn main() !void {
     );
     try out_gemm.flush();
 
-    // Eig bench (symmetric, row_major, f32). (Jacobi; keep size modest.)
-    const n_eig: usize = 128;
+    // Eig bench (symmetric, row_major, f32). (Jacobi; this is expensive.)
+    const n_eig: usize = if (lapack_heavy) 128 else 64;
     var a0_eig = try blazt.Matrix(f32, .row_major).init(alloc, n_eig, n_eig);
     defer a0_eig.deinit();
     var a_eig = try blazt.Matrix(f32, .row_major).init(alloc, n_eig, n_eig);
@@ -1347,9 +1366,12 @@ pub fn main() !void {
         }
     }
 
+    if (lapack_heavy) {
+        std.debug.print("running ops.eig(f32,row_major,symmetric) (heavy; set BLAZT_BENCH_LAPACK_HEAVY=0 to skip heavy sizes)\n", .{});
+    }
     var res_eig = try blazt.bench.run(alloc, "ops.eig(f32,row_major,symmetric)", .{
-        .warmup_iters = 1,
-        .samples = 5,
+        .warmup_iters = if (lapack_heavy) 1 else 0,
+        .samples = if (lapack_heavy) 5 else 1,
         .inner_iters = 1,
     }, eigOps, .{ n_eig, a0_eig, &a_eig, w_eig, &v_eig });
     defer res_eig.deinit();
