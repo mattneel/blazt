@@ -18,7 +18,13 @@ pub const ThreadPool = struct {
         ///
         /// This is a best-effort hint: failures are ignored.
         pin_threads: bool = false,
-        /// Base CPU index used when `pin_threads` is enabled.
+        /// Starting offset within the current process' CPU affinity mask.
+        ///
+        /// - If the process is constrained via `taskset -c ...`, that mask is used.
+        /// - Each worker is pinned to the `i`th CPU in the mask, starting at this offset.
+        /// - If affinity cannot be queried, we fall back to CPU indices `[pin_base_cpu..]`.
+        pin_affinity_offset: usize = 0,
+        /// Fallback base CPU index used when the process affinity mask can't be queried.
         pin_base_cpu: usize = 0,
     };
 
@@ -70,12 +76,43 @@ pub const ThreadPool = struct {
         const workers = try allocator.alloc(Worker, thread_count);
         errdefer allocator.free(workers);
 
+        // If requested, compute a deterministic per-worker CPU assignment based on the
+        // current process affinity mask (so `taskset` / cpusets compose cleanly).
+        var pin_cpus: [std.os.linux.CPU_SETSIZE * 8]usize = undefined;
+        var pin_cpu_count: usize = 0;
+        if (options.pin_threads and builtin.os.tag == .linux) {
+            var set = std.mem.zeroes(std.os.linux.cpu_set_t);
+            const rc = std.os.linux.sched_getaffinity(0, @sizeOf(std.os.linux.cpu_set_t), &set);
+            if (std.os.linux.errno(rc) == .SUCCESS) {
+                const bits_per_word: usize = @bitSizeOf(usize);
+                for (set, 0..) |word_bits, wi| {
+                    var w = word_bits;
+                    while (w != 0) {
+                        const tz: usize = @ctz(w);
+                        const cpu: usize = wi * bits_per_word + tz;
+                        if (pin_cpu_count < pin_cpus.len) {
+                            pin_cpus[pin_cpu_count] = cpu;
+                            pin_cpu_count += 1;
+                        }
+                        w &= (w - 1);
+                    }
+                }
+            }
+        }
+
         // Initialize worker contexts.
         for (workers, 0..) |*w, i| {
+            const pin_cpu: ?usize = if (!options.pin_threads) null else blk: {
+                if (pin_cpu_count != 0) {
+                    const idx: usize = options.pin_affinity_offset + i;
+                    if (idx < pin_cpu_count) break :blk pin_cpus[idx];
+                }
+                break :blk options.pin_base_cpu + i;
+            };
             w.* = .{
                 .shared = shared,
                 .index = @intCast(i),
-                .pin_cpu = if (options.pin_threads) options.pin_base_cpu + i else null,
+                .pin_cpu = pin_cpu,
             };
         }
 

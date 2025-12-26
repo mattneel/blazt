@@ -20,6 +20,7 @@ Environment / knobs:
 
 Options:
   --threads N    Override the "max threads" pass (default: nproc)
+  --physical     Use physical cores only (one CPU per core) for pinning; defaults --threads to physical-core count
   --no-build-blis  Do not attempt to build BLIS if not found
   --out DIR      Output directory (default: ./bench_results)
   --no-pin       Do not pin the benchmark process to a fixed CPU set
@@ -37,12 +38,17 @@ out_dir=""
 build_blis=1
 no_pin=0
 cpu_list=""
+physical=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --threads)
       max_threads="${2:-}"
       shift 2
+      ;;
+    --physical)
+      physical=1
+      shift
       ;;
     --out)
       out_dir="${2:-}"
@@ -82,10 +88,23 @@ fi
 mkdir -p "${out_dir}"
 
 if [[ -z "${max_threads}" ]]; then
-  if command -v nproc >/dev/null 2>&1; then
-    max_threads="$(nproc)"
+  if [[ "${physical}" -eq 1 ]] && command -v lscpu >/dev/null 2>&1; then
+    max_threads="$(
+      lscpu -p=CPU,CORE,SOCKET 2>/dev/null | awk -F, '
+        $0 ~ /^#/ { next }
+        {
+          key = $3 "-" $2
+          if (!(key in seen)) { seen[key] = 1; count++ }
+        }
+        END { if (count > 0) print count; else print 1 }
+      '
+    )"
   else
-    max_threads="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    if command -v nproc >/dev/null 2>&1; then
+      max_threads="$(nproc)"
+    else
+      max_threads="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    fi
   fi
 fi
 
@@ -105,7 +124,31 @@ export MKL_DYNAMIC=FALSE
 taskset_cmd=()
 if [[ "${no_pin}" -eq 0 ]] && command -v taskset >/dev/null 2>&1; then
   if [[ -z "${cpu_list}" ]]; then
-    cpu_list="0-$((max_threads - 1))"
+    if [[ "${physical}" -eq 1 ]] && command -v lscpu >/dev/null 2>&1; then
+      # Choose one logical CPU per physical core (first thread in each core).
+      cpu_list="$(
+        lscpu -p=CPU,CORE,SOCKET 2>/dev/null | awk -F, -v want="${max_threads}" '
+          $0 ~ /^#/ { next }
+          {
+            cpu = $1; core = $2; sock = $3;
+            key = sock "-" core;
+            if (!(key in seen)) {
+              seen[key] = 1;
+              cpus[count++] = cpu;
+              if (count >= want) exit;
+            }
+          }
+          END {
+            if (count == 0) { print "0"; exit }
+            for (i = 0; i < count; i++) {
+              printf "%s%s", cpus[i], (i + 1 < count ? "," : "")
+            }
+          }
+        '
+      )"
+    else
+      cpu_list="0-$((max_threads - 1))"
+    fi
   fi
   taskset_cmd=(taskset -c "${cpu_list}")
   echo "info: pinning benchmark process with taskset -c ${cpu_list}" >&2
