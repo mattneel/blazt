@@ -11,6 +11,11 @@ Development notes:
 - Building with **native CPU features** (AVX2/AVX512/FMA, etc): `zig build test -Dcpu=native` (you can also pass a specific model like `-Dcpu=znver2`, and add/subtract features with `+feat/-feat` syntax).
 - Inspecting build-time CPU cache constants: `zig build cpu-cache` then open `zig-out/cpu_cache.zig`.
 
+## Examples
+
+- **Runnable examples (GEMM, LU, Cholesky)**: [`examples/main.zig`](examples/main.zig)
+  - Run: `zig build examples`
+
 ---
 
 ## Abstract
