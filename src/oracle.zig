@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const posix = std.posix;
 
 /// Load reference BLAS implementations (OpenBLAS / BLIS / MKL) at runtime to enable parity tests
 /// and oracle benchmarking.
@@ -107,6 +109,22 @@ pub const Oracle = struct {
     pub const F77Sgemm = union(BlasIntKind) { i32: F77SgemmI32Fn, i64: F77SgemmI64Fn };
     pub const F77Dgemm = union(BlasIntKind) { i32: F77DgemmI32Fn, i64: F77DgemmI64Fn };
 
+    fn openDynLib(path_or_name: []const u8) LoadError!std.DynLib {
+        // `std.DynLib.open()` uses `dlopen(..., RTLD_LAZY)` on glibc, which can "succeed"
+        // even when the library is missing runtime dependencies, and then abort the process
+        // later when a missing symbol is first referenced.
+        //
+        // For oracle benchmarking we want failure to be non-fatal (skip the oracle), so
+        // use `RTLD_NOW` when libc is linked.
+        if (comptime builtin.os.tag == .linux and builtin.link_libc) {
+            const path_c = try posix.toPosixPath(path_or_name);
+            const handle = std.c.dlopen(&path_c, .{ .NOW = true }) orelse return error.LibraryNotFound;
+            return .{ .inner = .{ .handle = handle } };
+        }
+
+        return std.DynLib.open(path_or_name) catch error.LibraryNotFound;
+    }
+
     pub fn unload(self: *Oracle) void {
         self.lib.close();
         self.* = undefined;
@@ -120,7 +138,7 @@ pub const Oracle = struct {
         sgemm_symbol: [:0]const u8, // e.g. "sgemm_" or "sgemm_64_"
         dgemm_symbol: [:0]const u8, // e.g. "dgemm_" or "dgemm_64_"
     ) LoadError!Oracle {
-        var lib = try std.DynLib.open(path_or_name);
+        var lib = try openDynLib(path_or_name);
         errdefer lib.close();
 
         const f77 = try resolveFortran(&lib, sgemm_symbol, dgemm_symbol);
@@ -173,7 +191,7 @@ pub const Oracle = struct {
     }
 
     pub fn loadFromPath(path_or_name: []const u8, kind: Kind) LoadError!Oracle {
-        var lib = try std.DynLib.open(path_or_name);
+        var lib = try openDynLib(path_or_name);
         errdefer lib.close();
         const f77 = resolveFortran(&lib, "sgemm_", "dgemm_") catch |err| switch (err) {
             error.SymbolNotFound => try resolveFortran(&lib, "sgemm_64_", "dgemm_64_"),
@@ -203,17 +221,11 @@ pub const Oracle = struct {
     }
 
     fn loadFromCandidates(candidates: []const []const u8, kind: Kind) LoadError!Oracle {
-        var first_non_notfound: ?std.DynLib.Error = null;
-
         for (candidates) |name| {
-            const lib = std.DynLib.open(name) catch |err| {
-                if (err == error.FileNotFound) {
-                    continue;
-                }
-                if (first_non_notfound == null) first_non_notfound = err;
-                continue;
+            var owned = openDynLib(name) catch |err| switch (err) {
+                error.LibraryNotFound => continue,
+                else => return err,
             };
-            var owned = lib;
             const f77 = resolveFortran(&owned, "sgemm_", "dgemm_") catch |err| switch (err) {
                 error.SymbolNotFound => resolveFortran(&owned, "sgemm_64_", "dgemm_64_") catch |err2| switch (err2) {
                     error.SymbolNotFound => {
@@ -238,8 +250,6 @@ pub const Oracle = struct {
                 .dgemm_f77 = f77.dgemm_f77,
             };
         }
-
-        if (first_non_notfound) |e| return e;
         return error.LibraryNotFound;
     }
 

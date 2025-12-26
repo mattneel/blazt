@@ -227,6 +227,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             // Benchmarks should always be optimized, regardless of `-Doptimize`.
             .optimize = .ReleaseFast,
+            // Oracle benchmarking uses `std.DynLib` and is most stable when libc is linked.
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "blazt", .module = mod },
             },

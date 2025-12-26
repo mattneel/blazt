@@ -757,6 +757,9 @@ test "gemm parity with OpenBLAS" {
   - To pin an oracle to a specific library path, set the corresponding `BLAZT_ORACLE_*` variable above.
   - **Threading note**: for fair single-thread comparisons, set e.g.
     `OPENBLAS_NUM_THREADS=1`, `BLIS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `OMP_NUM_THREADS=1`.
+  - **MKL note**: MKL’s threaded runtime may require an OpenMP runtime library in-process.
+    If you see `undefined symbol: omp_get_num_procs`, try preloading GCC’s OpenMP runtime:
+    `LD_PRELOAD=/lib64/libgomp.so.1`.
 
 ```zig
 const Benchmark = struct {
