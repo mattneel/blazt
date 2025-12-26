@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const ThreadPool = struct {
     allocator: std.mem.Allocator,
@@ -12,6 +13,13 @@ pub const ThreadPool = struct {
         thread_count: usize = 0, // 0 => auto
         task_capacity: usize = 4096,
         deque_capacity: usize = 4096, // must be power of two
+        /// When enabled, each worker thread pins itself to a specific CPU index to reduce
+        /// scheduler noise during benchmarks.
+        ///
+        /// This is a best-effort hint: failures are ignored.
+        pin_threads: bool = false,
+        /// Base CPU index used when `pin_threads` is enabled.
+        pin_base_cpu: usize = 0,
     };
 
     pub const SubmitError = error{
@@ -67,6 +75,7 @@ pub const ThreadPool = struct {
             w.* = .{
                 .shared = shared,
                 .index = @intCast(i),
+                .pin_cpu = if (options.pin_threads) options.pin_base_cpu + i else null,
             };
         }
 
@@ -141,8 +150,13 @@ pub const ThreadPool = struct {
 const Worker = struct {
     shared: *Shared,
     index: u32,
+    pin_cpu: ?usize,
 
     fn main(self: *Worker) void {
+        if (self.pin_cpu) |cpu| {
+            // Best-effort; ignore failures to keep the pool usable in restricted environments.
+            pinCurrentThreadToCpu(cpu) catch {};
+        }
         while (true) {
             self.shared.mutex.lock();
             while (self.shared.q_len == 0 and !self.shared.shutdown.load(.acquire)) {
@@ -181,6 +195,21 @@ const Worker = struct {
 
     // (no per-worker queue helpers; work is taken from the shared ring buffer)
 };
+
+fn pinCurrentThreadToCpu(cpu_index: usize) !void {
+    if (builtin.os.tag != .linux) return;
+
+    // Linux `sched_setaffinity` takes a cpuset bitmask (up to 1024 CPUs with glibc layout).
+    var set = std.mem.zeroes(std.os.linux.cpu_set_t);
+
+    const bits_per_word: usize = @bitSizeOf(usize);
+    const word: usize = cpu_index / bits_per_word;
+    const bit: usize = cpu_index % bits_per_word;
+    if (word >= set.len) return;
+    set[word] |= (@as(usize, 1) << @intCast(bit));
+
+    try std.os.linux.sched_setaffinity(0, &set);
+}
 
 const Task = struct {
     // Used by InjectQueue and TaskPool freelist.

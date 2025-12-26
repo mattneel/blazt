@@ -22,6 +22,8 @@ Options:
   --threads N    Override the "max threads" pass (default: nproc)
   --no-build-blis  Do not attempt to build BLIS if not found
   --out DIR      Output directory (default: ./bench_results)
+  --no-pin       Do not pin the benchmark process to a fixed CPU set
+  --cpu-list LIST  CPU list for pinning (taskset -c LIST). Default: 0-(threads-1)
   -h, --help     Show help
 
 Examples:
@@ -33,6 +35,8 @@ EOF
 max_threads=""
 out_dir=""
 build_blis=1
+no_pin=0
+cpu_list=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +51,14 @@ while [[ $# -gt 0 ]]; do
     --no-build-blis)
       build_blis=0
       shift
+      ;;
+    --no-pin)
+      no_pin=1
+      shift
+      ;;
+    --cpu-list)
+      cpu_list="${2:-}"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -83,6 +95,25 @@ if ! [[ "${max_threads}" =~ ^[0-9]+$ ]] || [[ "${max_threads}" -lt 1 ]]; then
 fi
 
 export BLAZT_BENCH_ORACLE=1
+
+# Disable dynamic thread behavior for consistency across runs.
+export OMP_DYNAMIC=FALSE
+export MKL_DYNAMIC=FALSE
+
+# If taskset exists and pinning isn't disabled, pin the whole benchmark process to a stable CPU set.
+# This keeps all threads (including oracles) on the same CPUs across runs.
+taskset_cmd=()
+if [[ "${no_pin}" -eq 0 ]] && command -v taskset >/dev/null 2>&1; then
+  if [[ -z "${cpu_list}" ]]; then
+    cpu_list="0-$((max_threads - 1))"
+  fi
+  taskset_cmd=(taskset -c "${cpu_list}")
+  echo "info: pinning benchmark process with taskset -c ${cpu_list}" >&2
+else
+  if [[ "${no_pin}" -eq 0 ]]; then
+    echo "info: taskset not found; running without CPU pinning (use --no-pin to silence)" >&2
+  fi
+fi
 
 blis_lib="${BLAZT_ORACLE_BLIS:-}"
 if [[ -z "${blis_lib}" ]]; then
@@ -126,7 +157,7 @@ run_bench() {
   BLIS_NUM_THREADS="${thr}" \
   MKL_NUM_THREADS="${thr}" \
   OMP_NUM_THREADS="${thr}" \
-    zig build bench > "${out}"
+    "${taskset_cmd[@]}" zig build bench > "${out}"
 }
 
 run_bench "single_thread" 1

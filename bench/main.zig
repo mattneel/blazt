@@ -1488,7 +1488,10 @@ pub fn main() !void {
         if (threads == last_threads) continue;
         last_threads = threads;
 
-        var pool = try blazt.ThreadPool.init(alloc, .{ .thread_count = threads });
+        var pool = try blazt.ThreadPool.init(alloc, .{
+            .thread_count = threads,
+            .pin_threads = true,
+        });
         defer pool.deinit();
 
         var name_buf: [64]u8 = undefined;
