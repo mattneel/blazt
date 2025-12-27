@@ -137,8 +137,11 @@ fn gemmParallelBlockedRowMajor(
         pc: usize,
         kc_cur: usize,
         beta_block: T,
-        pack_b: [*]const T,
+        pack_b: [*]T,
         pb_panels: usize,
+        next_panel: *std.atomic.Value(usize),
+        pack_done: *std.atomic.Value(usize),
+        task_count: usize,
         next_block: *std.atomic.Value(usize),
         total_blocks: usize,
 
@@ -151,6 +154,26 @@ fn gemmParallelBlockedRowMajor(
             // Per-worker packed A buffer (stack-local).
             const PACK_A_BLOCK_ELEMS: usize = MC * KC;
             var pack_a_buf: [PACK_A_BLOCK_ELEMS]T align(memory.CacheLine) = undefined;
+
+            // Phase 1: cooperatively pack B panels for this (jc,pc) into the shared buffer.
+            while (true) {
+                const jp = self.next_panel.fetchAdd(1, .acq_rel);
+                if (jp >= self.pb_panels) break;
+
+                const jr: usize = jp * NR;
+                const nr_cur = @min(NR, self.nc_cur - jr);
+
+                const pb_ptr_unaligned: [*]T = self.pack_b + jp * PB_STRIDE_ELEMS;
+                const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * self.kc_cur];
+                gemm_mod.packB(T, .row_major, NR, self.kc_cur, nr_cur, self.b, self.pc, self.jc + jr, pb);
+            }
+
+            // Barrier: ensure packed-B is fully written before any thread starts computing.
+            _ = self.pack_done.fetchAdd(1, .acq_rel);
+            while (self.pack_done.load(.acquire) < self.task_count) {
+                std.atomic.spinLoopHint();
+            }
 
             while (true) {
                 const bi = self.next_block.fetchAdd(1, .acq_rel);
@@ -211,21 +234,12 @@ fn gemmParallelBlockedRowMajor(
             const kc_cur = @min(KC, k - pc);
             const beta_block: T = if (pc == 0) beta else @as(T, 1);
 
-            // Pack B panel once for this (jc,pc).
             const pb_panels: usize = (nc_cur + NR - 1) / NR;
             std.debug.assert(pb_panels <= PACK_B_STACK_PANELS);
-            var jp: usize = 0;
-            while (jp < pb_panels) : (jp += 1) {
-                const jr: usize = jp * NR;
-                const nr_cur = @min(NR, nc_cur - jr);
-
-                const pb_ptr_unaligned: [*]T = pack_b_shared[0..].ptr + jp * PB_STRIDE_ELEMS;
-                const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
-                const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
-                gemm_mod.packB(T, .row_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
-            }
 
             // Dispatch workers over IC blocks for this panel.
+            var next_panel = std.atomic.Value(usize).init(0);
+            var pack_done = std.atomic.Value(usize).init(0);
             var next_block = std.atomic.Value(usize).init(0);
             const total_blocks: usize = (m + mc_step - 1) / mc_step;
             const task_count: usize = @min(pool_threads, 256);
@@ -248,6 +262,9 @@ fn gemmParallelBlockedRowMajor(
                     .beta_block = beta_block,
                     .pack_b = pack_b_shared[0..].ptr,
                     .pb_panels = pb_panels,
+                    .next_panel = &next_panel,
+                    .pack_done = &pack_done,
+                    .task_count = task_count,
                     .next_block = &next_block,
                     .total_blocks = total_blocks,
                 };

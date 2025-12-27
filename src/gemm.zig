@@ -217,6 +217,7 @@ pub fn computeTileParamsRowMajor(comptime T: type) TileParams {
     // Choose a N-vectorized register block:
     // - `NR` is a multiple of SIMD width (contiguous B vector loads)
     // - `MR` is kept modest to avoid spills (accumulators ~= MR * (NR/vl))
+    // Micro-kernel register block sizes for the row-major N-vectorized kernel.
     const NR: usize = blk: {
         if (vl <= 1) break :blk 4;
         const nr0 = @min(vl * 2, 16);
