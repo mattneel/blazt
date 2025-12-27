@@ -1395,6 +1395,24 @@ pub fn packA(
     std.debug.assert(dst.len >= MR * kc);
     std.debug.assert(@intFromPtr(dst.ptr) % memory.CacheLine == 0);
 
+    // Fast path: col-major A panels are contiguous in memory for each k-slice.
+    if (comptime layout == .col_major) {
+        // Copy `m` rows for each column p, then zero-pad out to MR.
+        for (0..kc) |p| {
+            const src_off = (col0 + p) * a.stride + row0;
+            const src = a.data[src_off .. src_off + m];
+
+            const dst_off = p * MR;
+            const dst_slice = dst[dst_off .. dst_off + m];
+            std.mem.copyForwards(T, dst_slice, src);
+
+            if (m < MR) {
+                @memset(dst[dst_off + m .. dst_off + MR], @as(T, 0));
+            }
+        }
+        return;
+    }
+
     const aAt = struct {
         inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
             return switch (layout) {
@@ -1435,6 +1453,31 @@ pub fn packB(
     std.debug.assert(col0 + n <= b.cols);
     std.debug.assert(dst.len >= NR * kc);
     std.debug.assert(@intFromPtr(dst.ptr) % memory.CacheLine == 0);
+
+    // Fast path: row-major B panels are contiguous in memory for each k row.
+    if (comptime layout == .row_major) {
+        if (n == NR) {
+            for (0..kc) |p| {
+                const src_off = (row0 + p) * b.stride + col0;
+                const src = b.data[src_off .. src_off + NR];
+                const dst_off = p * NR;
+                const dst_slice = dst[dst_off .. dst_off + NR];
+                std.mem.copyForwards(T, dst_slice, src);
+            }
+        } else {
+            for (0..kc) |p| {
+                const src_off = (row0 + p) * b.stride + col0;
+                const src = b.data[src_off .. src_off + n];
+                const dst_off = p * NR;
+                const dst_slice = dst[dst_off .. dst_off + n];
+                std.mem.copyForwards(T, dst_slice, src);
+                if (n < NR) {
+                    @memset(dst[dst_off + n .. dst_off + NR], @as(T, 0));
+                }
+            }
+        }
+        return;
+    }
 
     const bAt = struct {
         inline fn f(mat: matrix.Matrix(T, layout), i: usize, j: usize) T {
