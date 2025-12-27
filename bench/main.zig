@@ -388,6 +388,41 @@ pub fn main() !void {
     var stdout_buffer: [0x400]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const out = &stdout_writer.interface;
+
+    // ---------------------------------------------------------------------
+    // Sanity: show which cpu_cache data + tile params this build is using.
+    // (This helps catch "cpu_cache_default got wired in" regressions.)
+    // ---------------------------------------------------------------------
+    {
+        const info = blazt.CpuInfo.native();
+        const p32 = blazt.gemm.computeTileParams(f32);
+        const p64 = blazt.gemm.computeTileParams(f64);
+        try out.print(
+            "info: cpu_cache detected={} method={s} l1d={}B l2={}B l3={}B l1d_share={} l2_share={} l3_share={}\n" ++
+                "info: gemm.tile(f32) MR={} NR={} KC={} MC={} NC={}\n" ++
+                "info: gemm.tile(f64) MR={} NR={} KC={} MC={} NC={}\n",
+            .{
+                blazt.cpu.cache.detected,
+                blazt.cpu.cache.method,
+                info.l1d_size_bytes,
+                info.l2_size_bytes,
+                info.l3_size_bytes,
+                info.l1d_shared_by_logical_cpus,
+                info.l2_shared_by_logical_cpus,
+                info.l3_shared_by_logical_cpus,
+                p32.MR,
+                p32.NR,
+                p32.KC,
+                p32.MC,
+                p32.NC,
+                p64.MR,
+                p64.NR,
+                p64.KC,
+                p64.MC,
+                p64.NC,
+            },
+        );
+    }
     try out.print(
         "bench {s}\n  p50: {d} ns  ({d:.3} GFLOP/s)\n  p90: {d} ns  ({d:.3} GFLOP/s)\n  p99: {d} ns  ({d:.3} GFLOP/s)\n",
         .{

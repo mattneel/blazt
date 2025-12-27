@@ -85,22 +85,15 @@ GEMM \(C*{M×N} = A*{M×K} B\_{K×N}\) does \(2MNK\) FLOPs.
 
 We target “within 2×” of a conservative theoretical peak for first cut; tuning is incremental and mostly comptime.
 
-### Tuning presets (comptime)
+### Tiling derivation (comptime)
 
 `blazt.gemm.computeTileParams(T)` computes `MR/NR/KC/MC/NC` at comptime from:
 
 - target feature flags (`@import("builtin").cpu`)
 - cache sizes (`blazt.CpuInfo.native()` which sources caches from the generated `cpu_cache` module)
+ - cache sharing topology (`*_shared_by_logical_cpus` from `cpu_cache`)
 
-You can force a coarse preset at build time:
-
-- `-Dgemm_tuning=auto` (default): choose a preset from CPU features
-- `-Dgemm_tuning=generic`: conservative baseline
-- `-Dgemm_tuning=avx2`: x86 AVX2(+FMA) defaults
-- `-Dgemm_tuning=avx512`: x86 AVX-512 defaults
-- `-Dgemm_tuning=neon`: ARM NEON defaults
-
-These presets currently influence the chosen `NR` and some cache-budget heuristics; deeper target tables can be layered in later without changing the GEMM API.
+The intent is to use real cache topology (from the build-time probe) rather than user-selected tuning presets.
 
 ### Packing contracts
 

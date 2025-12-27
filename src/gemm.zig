@@ -27,42 +27,6 @@ pub const KernelVariant = enum {
     alpha_one_beta_one,
 };
 
-pub const GemmTuningPreset = enum {
-    /// Auto-select based on target CPU features.
-    auto,
-    /// Conservative baseline (cache-driven heuristics only).
-    generic,
-    /// x86 AVX2 (+FMA) tuned defaults.
-    avx2,
-    /// x86 AVX-512 tuned defaults.
-    avx512,
-    /// ARM NEON tuned defaults.
-    neon,
-};
-
-fn parseGemmTuningPreset(comptime s: []const u8) GemmTuningPreset {
-    if (std.mem.eql(u8, s, "auto")) return .auto;
-    if (std.mem.eql(u8, s, "generic")) return .generic;
-    if (std.mem.eql(u8, s, "avx2")) return .avx2;
-    if (std.mem.eql(u8, s, "avx512")) return .avx512;
-    if (std.mem.eql(u8, s, "neon")) return .neon;
-    @compileError(std.fmt.comptimePrint("unknown -Dgemm_tuning preset '{s}' (expected auto|generic|avx2|avx512|neon)", .{s}));
-}
-
-fn autoGemmTuningPreset(info: cpu.CpuInfo) GemmTuningPreset {
-    if (info.has_avx512f) return .avx512;
-    if (info.has_avx2 and info.has_fma) return .avx2;
-    if (info.has_neon) return .neon;
-    return .generic;
-}
-
-fn selectedGemmTuningPreset(comptime info: cpu.CpuInfo, comptime requested: GemmTuningPreset) GemmTuningPreset {
-    return switch (requested) {
-        .auto => autoGemmTuningPreset(info),
-        else => requested,
-    };
-}
-
 fn autoPrefetchDistanceK(comptime T: type, comptime elems_per_k: usize) usize {
     // Heuristic: prefetch ~2 cache lines ahead, expressed in k-iterations.
     const bytes_per_k: usize = elems_per_k * @sizeOf(T);
@@ -145,22 +109,13 @@ fn clamp(x: usize, lo: usize, hi: usize) usize {
 
 /// Compute reasonable blocking parameters at comptime for GEMM kernels.
 ///
-/// This is a **safe fallback** policy (not an auto-tuner):
+/// This is a cache-topology-driven heuristic (not an auto-tuner):
 /// - Derives MR from SIMD width
-/// - Chooses NR conservatively
-/// - Derives KC/MC/NC from conservative cache defaults (see `cpu.CacheDefaults`)
+/// - Chooses NR from ISA features (register file pressure)
+/// - Derives KC/MC/NC from build-time-probed cache sizes and sharing topology
 ///
 /// All returned values are **comptime-known** (no runtime dispatch).
 pub fn computeTileParams(comptime T: type) TileParams {
-    const requested = comptime parseGemmTuningPreset(build_options.gemm_tuning);
-    return computeTileParamsWithTuning(T, requested);
-}
-
-/// Compute tile parameters using an explicit tuning preset.
-///
-/// This is mainly intended for testing and benchmarking presets; `computeTileParams(T)` uses
-/// the build option `-Dgemm_tuning=...` (default: `auto`).
-pub fn computeTileParamsWithTuning(comptime T: type, comptime tuning: GemmTuningPreset) TileParams {
     if (comptime @typeInfo(T) != .float) {
         @compileError("computeTileParams only supports floating-point types");
     }
@@ -172,58 +127,57 @@ pub fn computeTileParamsWithTuning(comptime T: type, comptime tuning: GemmTuning
     const vl_ci = simd.suggestVectorLength(T) orelse 1;
     const vl: usize = @intCast(vl_ci);
 
-    const preset: GemmTuningPreset = comptime selectedGemmTuningPreset(info, tuning);
-
     // Micro-kernel register block sizes.
-    // Keep these conservative so we don't over-commit registers on unknown targets.
+    // Our micro-kernel uses `MR` as the vector length for the row dimension (one vector load per k),
+    // and keeps `NR` independent accumulator vectors live.
     const MR: usize = clamp(vl, 1, 16);
-    const NR: usize = switch (preset) {
-        .generic => switch (T) {
-            f32 => 4,
-            f64 => 4,
-            else => 2,
-        },
-        .avx2 => switch (T) {
-            // BLIS-like defaults (initial pass).
-            f32 => 6,
-            f64 => 4,
-            else => 2,
-        },
-        .avx512 => switch (T) {
-            f32 => 8,
-            f64 => 6,
-            else => 2,
-        },
-        .neon => switch (T) {
-            f32 => 4,
-            f64 => 4,
-            else => 2,
-        },
-        .auto => unreachable, // `selectedGemmTuningPreset` never returns .auto
+    const NR: usize = blk: {
+        // Heuristic: on wide SIMD targets we can keep more accumulators live without spilling.
+        // Keep this modest (<=8) until we have per-ISA register pressure tuning.
+        if (info.has_avx512f) break :blk 8;
+        if (info.has_avx2 and info.has_fma) break :blk 8;
+        if (info.has_neon) break :blk 8;
+        break :blk 4;
     };
 
     const elt_bytes: usize = @sizeOf(T);
     const mrnr_bytes: usize = (MR + NR) * elt_bytes;
 
-    // KC: keep A(mr,kc)+B(kc,nr) within ~half L1D (slightly more aggressive for known SIMD targets).
-    const l1_budget = switch (preset) {
-        .avx2, .avx512 => (info.l1d_size_bytes * 3) / 4,
-        .neon, .generic => info.l1d_size_bytes / 2,
-        .auto => unreachable,
-    };
-    const kc_raw = if (mrnr_bytes == 0) 64 else l1_budget / mrnr_bytes;
-    const KC = clamp(roundDownMultiple(@max(kc_raw, 64), 8), 64, 2048);
+    // Cache sharing topology:
+    //
+    // `*_shared_by_logical_cpus` comes from CPUID leaf 4 (x86), and counts logical CPUs.
+    // We approximate "threads per core" with `l1d_shared_by_logical_cpus` and derive a
+    // physical-core sharing factor for L2/L3:
+    //   cores_per_L2 = ceil(l2_shared / threads_per_core)
+    //   cores_per_L3 = ceil(l3_shared / threads_per_core)
+    //
+    // This lets us budget L2/L3 capacity per physical core (assuming we pin one worker per core).
+    const threads_per_core: usize = @max(info.l1d_shared_by_logical_cpus, 1);
+    const l2_cores: usize = @max((info.l2_shared_by_logical_cpus + threads_per_core - 1) / threads_per_core, 1);
+    const l3_cores: usize = @max((info.l3_shared_by_logical_cpus + threads_per_core - 1) / threads_per_core, 1);
 
-    // MC: keep packed A(MC,KC) within ~half L2.
-    const l2_budget = info.l2_size_bytes / 2;
+    // KC: keep A(MR×KC) + B(KC×NR) within ~3/4 of L1D (leave room for code/stack/other).
+    const l1_budget = (info.l1d_size_bytes * 3) / 4;
+    const kc_raw = if (mrnr_bytes == 0) 64 else l1_budget / mrnr_bytes;
+    const kc_align: usize = if (elt_bytes == 0) 8 else @max(256 / elt_bytes, 8);
+    const KC = blk: {
+        const hi = 4096;
+        const kc0 = @max(kc_raw, kc_align);
+        break :blk clamp(roundDownMultiple(kc0, kc_align), kc_align, hi);
+    };
+
+    // MC: keep packed A(MC×KC) within ~3/4 of the per-core share of L2.
+    const l2_budget_total = (info.l2_size_bytes * 3) / 4;
+    const l2_budget = l2_budget_total / l2_cores;
     const mc_raw = if (KC == 0) MR else l2_budget / (KC * elt_bytes);
     const MC = blk: {
         const hi = roundDownMultiple(4096, MR);
         break :blk clamp(roundDownMultiple(@max(mc_raw, MR), MR), MR, hi);
     };
 
-    // NC: keep packed B(KC,NC) within ~half L3.
-    const l3_budget = info.l3_size_bytes / 2;
+    // NC: keep packed B(KC×NC) within ~3/4 of the per-core share of L3.
+    const l3_budget_total = (info.l3_size_bytes * 3) / 4;
+    const l3_budget = l3_budget_total / l3_cores;
     const nc_raw = if (KC == 0) NR else l3_budget / (KC * elt_bytes);
     const NC = blk: {
         const hi = roundDownMultiple(8192, NR);
@@ -543,7 +497,95 @@ pub fn gemmBlockedRange(
             const kc_cur = @min(KC, k - pc);
             const beta_block: T = if (pc == 0) beta else @as(T, 1);
 
-            if (use_pack_a_block) {
+            // If `pack_b` is large enough, pack the entire KC×NC panel of B once and reuse it
+            // across all MC blocks of A (BLIS 5-loop ordering).
+            const nr_panels_total: usize = (nc_cur + NR - 1) / NR;
+            const use_pack_b_panel: bool = pack_b.len >= PB_STRIDE_ELEMS * nr_panels_total;
+
+            if (use_pack_b_panel) {
+                // Pack all NR-wide micro-panels of B for this (jc,pc) panel once.
+                var jp: usize = 0;
+                while (jp < nr_panels_total) : (jp += 1) {
+                    const jr: usize = jp * NR;
+                    const nr_cur = @min(NR, nc_cur - jr);
+
+                    const pb_ptr_unaligned: [*]T = pack_b.ptr + jp * PB_STRIDE_ELEMS;
+                    const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                    const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
+                    packB(T, .col_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+                }
+
+                var ic: usize = 0;
+                while (ic < m) : (ic += MC) {
+                    const mc_cur = @min(MC, m - ic);
+
+                    if (use_pack_a_block) {
+                        const mc_pad = roundUpMultiple(mc_cur, MR);
+                        const pack_a_block: []align(memory.CacheLine) T = pack_a[0 .. mc_pad * kc_cur];
+
+                        // Pack A block (col_major) into pack_a_block.
+                        var ir_pack: usize = 0;
+                        while (ir_pack < mc_pad) : (ir_pack += MR) {
+                            const row_base = ic + ir_pack;
+                            for (0..kc_cur) |p| {
+                                const src_col_off = (pc + p) * a.stride;
+                                const dst_base = ir_pack * kc_cur + p * MR;
+                                inline for (0..MR) |i| {
+                                    const r = row_base + i;
+                                    pack_a_block[dst_base + i] = if (r < ic + mc_cur) a.data[src_col_off + r] else @as(T, 0);
+                                }
+                            }
+                        }
+
+                        jp = 0;
+                        while (jp < nr_panels_total) : (jp += 1) {
+                            const jr: usize = jp * NR;
+                            const nr_cur = @min(NR, nc_cur - jr);
+
+                            const pb_ptr_unaligned: [*]const T = pack_b.ptr + jp * PB_STRIDE_ELEMS;
+                            const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
+
+                            var ir: usize = 0;
+                            while (ir < mc_cur) : (ir += MR) {
+                                const mr_cur = @min(MR, mc_cur - ir);
+                                const pa_ptr: [*]const T = pack_a_block.ptr + ir * kc_cur;
+                                const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
+
+                                if (mr_cur == MR and nr_cur == NR) {
+                                    microKernel(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block);
+                                } else {
+                                    microKernelPartial(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                }
+                            }
+                        }
+                    } else {
+                        // Pack A micro-panels on demand, but reuse each packed micro-panel across
+                        // the entire packed B panel.
+                        var ir: usize = 0;
+                        while (ir < mc_cur) : (ir += MR) {
+                            const mr_cur = @min(MR, mc_cur - ir);
+                            const pa = pack_a[0 .. MR * kc_cur];
+                            packA(T, .col_major, MR, kc_cur, mr_cur, a, ic + ir, pc, pa);
+
+                            jp = 0;
+                            while (jp < nr_panels_total) : (jp += 1) {
+                                const jr: usize = jp * NR;
+                                const nr_cur = @min(NR, nc_cur - jr);
+
+                                const pb_ptr_unaligned: [*]const T = pack_b.ptr + jp * PB_STRIDE_ELEMS;
+                                const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                                const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
+
+                                if (mr_cur == MR and nr_cur == NR) {
+                                    microKernel(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block);
+                                } else {
+                                    microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (use_pack_a_block) {
                 // Pack the entire MC×KC A block once (into pack_a) and reuse it across all B panels.
                 //
                 // This reduces redundant A packing work significantly for large N.
@@ -603,7 +645,11 @@ pub fn gemmBlockedRange(
                                 const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
                                 const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
                                 const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
-                                microKernelPartial(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                if (mr_cur == MR and nr_cur == NR) {
+                                    microKernel(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block);
+                                } else {
+                                    microKernelPartial(T, MR, NR, kc_cur, pa_ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                }
                             }
                         }
                     }
@@ -648,7 +694,11 @@ pub fn gemmBlockedRange(
                                 const pb_ptr_unaligned: [*]const T = pack_b.ptr + bj * PB_STRIDE_ELEMS;
                                 const pb_ptr: [*]align(memory.CacheLine) const T = @ptrCast(@alignCast(pb_ptr_unaligned));
                                 const c_ptr: [*]T = c.data[(jc + jr) * c.stride + (ic + ir) ..].ptr;
-                                microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                if (mr_cur == MR and nr_cur == NR) {
+                                    microKernel(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block);
+                                } else {
+                                    microKernelPartial(T, MR, NR, kc_cur, pa.ptr, pb_ptr, c_ptr, rs_c, cs_c, alpha, beta_block, mr_cur, nr_cur);
+                                }
                             }
                         }
                     }
