@@ -73,34 +73,194 @@ pub const parallel = struct {
             return;
         }
 
-        // Row-major GEMM can be expressed as a col-major GEMM on transposed views:
-        // (A*B)^T = B^T * A^T
-        const a_t: matrix.Matrix(T, .col_major) = .{
-            .data = a.data,
-            .rows = a.cols,
-            .cols = a.rows,
-            .stride = a.stride,
-            .allocator = a.allocator,
-        };
-        const b_t: matrix.Matrix(T, .col_major) = .{
-            .data = b.data,
-            .rows = b.cols,
-            .cols = b.rows,
-            .stride = b.stride,
-            .allocator = b.allocator,
-        };
-        var c_t: matrix.Matrix(T, .col_major) = .{
-            .data = c.data,
-            .rows = c.cols,
-            .cols = c.rows,
-            .stride = c.stride,
-            .allocator = c.allocator,
-        };
-
-        // Compute Cᵀ := alpha * Bᵀ * Aᵀ + beta * Cᵀ in parallel by splitting column panels of Cᵀ.
-        gemmParallelBlockedColMajor(T, n, m, k, alpha, b_t, a_t, beta, &c_t, thread_pool);
+        gemmParallelBlockedRowMajor(T, m, n, k, alpha, a, b, beta, c, thread_pool);
     }
 };
+
+fn gemmParallelBlockedRowMajor(
+    comptime T: type,
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: T,
+    a: matrix.Matrix(T, .row_major),
+    b: matrix.Matrix(T, .row_major),
+    beta: T,
+    c: *matrix.Matrix(T, .row_major),
+    thread_pool: *thread_pool_mod.ThreadPool,
+) void {
+    const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParamsRowMajor(T);
+    const MR: usize = P.MR;
+    const NR: usize = P.NR;
+    const KC: usize = P.KC;
+    const MC: usize = P.MC;
+    const NC: usize = P.NC;
+
+    if (m == 0 or n == 0) return;
+
+    const pool_threads: usize = thread_pool.threads.len;
+    if (pool_threads <= 1) {
+        ops.gemm(T, .row_major, .no_trans, .no_trans, alpha, a, b, beta, c);
+        return;
+    }
+
+    const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+    const PACK_B_STACK_PANELS: usize = (NC + NR - 1) / NR;
+    const PACK_B_STACK_ELEMS: usize = PB_STRIDE_ELEMS * @max(PACK_B_STACK_PANELS, 1);
+
+    // Shared packed-B buffer (per call). Packed panels are cache-line aligned via PB_STRIDE_ELEMS.
+    var pack_b_shared: [PACK_B_STACK_ELEMS]T align(memory.CacheLine) = undefined;
+
+    // Adaptive MC for parallelism: when M is small, reduce MC so we have enough row blocks
+    // for threads to work on (avoids under-parallelization when MC is large).
+    const mc_step: usize = blk: {
+        const want = (m + pool_threads - 1) / pool_threads;
+        const want_aligned = roundUpMultiple(@max(want, MR), MR);
+        break :blk @min(MC, want_aligned);
+    };
+
+    const WorkerCtx = struct {
+        const Self = @This();
+
+        // Shared panel parameters (written by main thread before dispatch)
+        m: usize,
+        n: usize,
+        k: usize,
+        alpha: T,
+        beta: T,
+        a: matrix.Matrix(T, .row_major),
+        b: matrix.Matrix(T, .row_major),
+        c: *matrix.Matrix(T, .row_major),
+        mc_step: usize,
+        jc: usize,
+        nc_cur: usize,
+        pc: usize,
+        kc_cur: usize,
+        beta_block: T,
+        pack_b: [*]const T,
+        pb_panels: usize,
+        next_block: *std.atomic.Value(usize),
+        total_blocks: usize,
+
+        fn runOpaque(ctx_opaque: *anyopaque) void {
+            const ctx: *Self = @ptrCast(@alignCast(ctx_opaque));
+            ctx.run();
+        }
+
+        fn run(self: *Self) void {
+            // Per-worker packed A buffer (stack-local).
+            const PACK_A_BLOCK_ELEMS: usize = MC * KC;
+            var pack_a_buf: [PACK_A_BLOCK_ELEMS]T align(memory.CacheLine) = undefined;
+
+            while (true) {
+                const bi = self.next_block.fetchAdd(1, .acq_rel);
+                if (bi >= self.total_blocks) break;
+
+                const ic: usize = bi * self.mc_step;
+                if (ic >= self.m) continue;
+                const mc_cur = @min(self.mc_step, self.m - ic);
+                const mc_pad = roundUpMultiple(mc_cur, MR);
+                const pack_a_block: []align(memory.CacheLine) T = pack_a_buf[0 .. mc_pad * self.kc_cur];
+
+                // Pack A block (row_major): layout matches `gemmBlockedRangeRowMajor` block packing.
+                var ir_pack: usize = 0;
+                while (ir_pack < mc_pad) : (ir_pack += MR) {
+                    const row_base = ic + ir_pack;
+                    for (0..self.kc_cur) |p| {
+                        const src_col: usize = self.pc + p;
+                        const dst_base = ir_pack * self.kc_cur + p * MR;
+                        inline for (0..MR) |idx_i| {
+                            const r = row_base + idx_i;
+                            pack_a_block[dst_base + idx_i] = if (r < ic + mc_cur) self.a.data[r * self.a.stride + src_col] else @as(T, 0);
+                        }
+                    }
+                }
+
+                // Compute this (ic,jc) block using shared packed B.
+                var jp: usize = 0;
+                while (jp < self.pb_panels) : (jp += 1) {
+                    const jr: usize = jp * NR;
+                    const nr_cur = @min(NR, self.nc_cur - jr);
+                    const pb_ptr: [*]const T = self.pack_b + jp * PB_STRIDE_ELEMS;
+
+                    var ir: usize = 0;
+                    while (ir < mc_cur) : (ir += MR) {
+                        const mr_cur = @min(MR, mc_cur - ir);
+                        const pa_ptr: [*]const T = pack_a_block.ptr + ir * self.kc_cur;
+                        const c_ptr: [*]T = self.c.data[(ic + ir) * self.c.stride + (self.jc + jr) ..].ptr;
+
+                        if (mr_cur == MR and nr_cur == NR) {
+                            gemm_mod.microKernelRowMajor(T, MR, NR, self.kc_cur, pa_ptr, pb_ptr, c_ptr, self.c.stride, 1, self.alpha, self.beta_block);
+                        } else {
+                            gemm_mod.microKernelRowMajorPartial(T, MR, NR, self.kc_cur, pa_ptr, pb_ptr, c_ptr, self.c.stride, 1, self.alpha, self.beta_block, mr_cur, nr_cur);
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    var ctxs: [256]WorkerCtx = undefined;
+
+    var jc: usize = 0;
+    while (jc < n) : (jc += NC) {
+        const nc_cur = @min(NC, n - jc);
+
+        var pc: usize = 0;
+        while (pc < k) : (pc += KC) {
+            const kc_cur = @min(KC, k - pc);
+            const beta_block: T = if (pc == 0) beta else @as(T, 1);
+
+            // Pack B panel once for this (jc,pc).
+            const pb_panels: usize = (nc_cur + NR - 1) / NR;
+            std.debug.assert(pb_panels <= PACK_B_STACK_PANELS);
+            var jp: usize = 0;
+            while (jp < pb_panels) : (jp += 1) {
+                const jr: usize = jp * NR;
+                const nr_cur = @min(NR, nc_cur - jr);
+
+                const pb_ptr_unaligned: [*]T = pack_b_shared[0..].ptr + jp * PB_STRIDE_ELEMS;
+                const pb_ptr: [*]align(memory.CacheLine) T = @ptrCast(@alignCast(pb_ptr_unaligned));
+                const pb: []align(memory.CacheLine) T = pb_ptr[0 .. NR * kc_cur];
+                gemm_mod.packB(T, .row_major, NR, kc_cur, nr_cur, b, pc, jc + jr, pb);
+            }
+
+            // Dispatch workers over IC blocks for this panel.
+            var next_block = std.atomic.Value(usize).init(0);
+            const total_blocks: usize = (m + mc_step - 1) / mc_step;
+            const task_count: usize = @min(pool_threads, 256);
+
+            for (0..task_count) |ti| {
+                ctxs[ti] = .{
+                    .m = m,
+                    .n = n,
+                    .k = k,
+                    .alpha = alpha,
+                    .beta = beta,
+                    .a = a,
+                    .b = b,
+                    .c = c,
+                    .mc_step = mc_step,
+                    .jc = jc,
+                    .nc_cur = nc_cur,
+                    .pc = pc,
+                    .kc_cur = kc_cur,
+                    .beta_block = beta_block,
+                    .pack_b = pack_b_shared[0..].ptr,
+                    .pb_panels = pb_panels,
+                    .next_block = &next_block,
+                    .total_blocks = total_blocks,
+                };
+
+                thread_pool.submit(WorkerCtx.runOpaque, &ctxs[ti]) catch {
+                    ctxs[ti].run();
+                };
+            }
+
+            thread_pool.waitAll();
+        }
+    }
+}
 
 fn gemmParallelBlockedColMajor(
     comptime T: type,
@@ -283,6 +443,12 @@ fn gemmParallelBlockedColMajor(
 
     // Wait for all submitted tasks to complete.
     thread_pool.waitAll();
+}
+
+fn roundUpMultiple(x: usize, multiple: usize) usize {
+    if (multiple == 0) return x;
+    const r = x % multiple;
+    return if (r == 0) x else x + (multiple - r);
 }
 
 

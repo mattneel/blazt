@@ -1446,31 +1446,27 @@ pub const ops = struct {
 
         // Fast path: use the cache-blocked kernel for the common case.
         if (eff_a == .no_trans and eff_b == .no_trans) {
-            const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
-            const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
-            const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
-
-            // Prefer larger packed buffers when we have an allocator available.
-            //
-            // - `pack_a`: enables A-block packing (MC×KC) in the macro-kernel.
-            // - `pack_b`: enables packing the full B panel once per (jc,pc) and reusing it across IC blocks.
-            const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
-            var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
-            var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
-            var pack_a_big_alloc: ?std.mem.Allocator = null;
-            defer if (pack_a_big_opt) |buf| {
-                pack_a_big_alloc.?.free(buf);
-            };
-
-            if (c.allocator) |alloc| {
-                pack_a_big_alloc = alloc;
-                pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
-            }
-
-            const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
-
             switch (layout) {
                 .col_major => {
+                    const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
+                    const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+                    const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
+
+                    const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+                    var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+                    var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
+                    var pack_a_big_alloc: ?std.mem.Allocator = null;
+                    defer if (pack_a_big_opt) |buf| {
+                        pack_a_big_alloc.?.free(buf);
+                    };
+
+                    if (c.allocator) |alloc| {
+                        pack_a_big_alloc = alloc;
+                        pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
+                    }
+
+                    const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
+
                     const nc_cap: usize = @min(P.NC, n);
                     const pb_full_panels: usize = (nc_cap + P.NR - 1) / P.NR;
                     const pb_panels_alloc: usize = @max(PB_PANELS, @max(pb_full_panels, 1));
@@ -1496,31 +1492,26 @@ pub const ops = struct {
                     return;
                 },
                 .row_major => {
-                    // Row-major GEMM can be expressed as a col-major GEMM on transposed views:
-                    // (A*B)^T = B^T * A^T
-                    const a_t: matrix.Matrix(T, .col_major) = .{
-                        .data = a.data,
-                        .rows = a.cols,
-                        .cols = a.rows,
-                        .stride = a.stride,
-                        .allocator = a.allocator,
-                    };
-                    const b_t: matrix.Matrix(T, .col_major) = .{
-                        .data = b.data,
-                        .rows = b.cols,
-                        .cols = b.rows,
-                        .stride = b.stride,
-                        .allocator = b.allocator,
-                    };
-                    var c_t: matrix.Matrix(T, .col_major) = .{
-                        .data = c.data,
-                        .rows = c.cols,
-                        .cols = c.rows,
-                        .stride = c.stride,
-                        .allocator = c.allocator,
+                    const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParamsRowMajor(T);
+                    const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+                    const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
+
+                    const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+                    var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+                    var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
+                    var pack_a_big_alloc: ?std.mem.Allocator = null;
+                    defer if (pack_a_big_opt) |buf| {
+                        pack_a_big_alloc.?.free(buf);
                     };
 
-                    const nc_cap: usize = @min(P.NC, m);
+                    if (c.allocator) |alloc| {
+                        pack_a_big_alloc = alloc;
+                        pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
+                    }
+
+                    const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
+
+                    const nc_cap: usize = @min(P.NC, n);
                     const pb_full_panels: usize = (nc_cap + P.NR - 1) / P.NR;
                     const pb_panels_alloc: usize = @max(PB_PANELS, @max(pb_full_panels, 1));
                     const PACK_B_ALLOC_ELEMS: usize = PB_STRIDE_ELEMS * pb_panels_alloc;
@@ -1541,7 +1532,7 @@ pub const ops = struct {
                     }
 
                     const pack_b_use: []align(memory.CacheLine) T = pack_b_big_opt orelse pack_b_small[0..];
-                    gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a_use, pack_b_use);
+                    gemm_mod.gemmBlockedRowMajor(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b_use);
                     return;
                 },
             }

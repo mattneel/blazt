@@ -397,10 +397,14 @@ pub fn main() !void {
         const info = blazt.CpuInfo.native();
         const p32 = blazt.gemm.computeTileParams(f32);
         const p64 = blazt.gemm.computeTileParams(f64);
+        const p32_rm = blazt.gemm.computeTileParamsRowMajor(f32);
+        const p64_rm = blazt.gemm.computeTileParamsRowMajor(f64);
         try out.print(
             "info: cpu_cache detected={} method={s} l1d={}B l2={}B l3={}B l1d_share={} l2_share={} l3_share={}\n" ++
-                "info: gemm.tile(f32) MR={} NR={} KC={} MC={} NC={}\n" ++
-                "info: gemm.tile(f64) MR={} NR={} KC={} MC={} NC={}\n",
+                "info: gemm.tile_col_major(f32) MR={} NR={} KC={} MC={} NC={}\n" ++
+                "info: gemm.tile_col_major(f64) MR={} NR={} KC={} MC={} NC={}\n" ++
+                "info: gemm.tile_row_major(f32) MR={} NR={} KC={} MC={} NC={}\n" ++
+                "info: gemm.tile_row_major(f64) MR={} NR={} KC={} MC={} NC={}\n",
             .{
                 blazt.cpu.cache.detected,
                 blazt.cpu.cache.method,
@@ -420,6 +424,16 @@ pub fn main() !void {
                 p64.KC,
                 p64.MC,
                 p64.NC,
+                p32_rm.MR,
+                p32_rm.NR,
+                p32_rm.KC,
+                p32_rm.MC,
+                p32_rm.NC,
+                p64_rm.MR,
+                p64_rm.NR,
+                p64_rm.KC,
+                p64_rm.MC,
+                p64_rm.NC,
             },
         );
     }
