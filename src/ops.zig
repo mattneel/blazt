@@ -1447,30 +1447,52 @@ pub const ops = struct {
         // Fast path: use the cache-blocked kernel for the common case.
         if (eff_a == .no_trans and eff_b == .no_trans) {
             const P: gemm_mod.TileParams = comptime gemm_mod.computeTileParams(T);
-                const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
-                const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
-                // Prefer a larger packed-A buffer (MC×KC) when we have an allocator available.
-                // This enables A-block packing inside the macro-kernel to reduce redundant packing work.
-                const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
-                var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
-                var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
-                var pack_a_big_alloc: ?std.mem.Allocator = null;
-                defer if (pack_a_big_opt) |buf| {
-                    pack_a_big_alloc.?.free(buf);
-                };
+            const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+            const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
 
-                if (c.allocator) |alloc| {
-                    pack_a_big_alloc = alloc;
-                    pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
-                }
+            // Prefer larger packed buffers when we have an allocator available.
+            //
+            // - `pack_a`: enables A-block packing (MC×KC) in the macro-kernel.
+            // - `pack_b`: enables packing the full B panel once per (jc,pc) and reusing it across IC blocks.
+            const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+            var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
+            var pack_a_big_opt: ?[]align(memory.CacheLine) T = null;
+            var pack_a_big_alloc: ?std.mem.Allocator = null;
+            defer if (pack_a_big_opt) |buf| {
+                pack_a_big_alloc.?.free(buf);
+            };
 
-                const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
+            if (c.allocator) |alloc| {
+                pack_a_big_alloc = alloc;
+                pack_a_big_opt = memory.allocAligned(alloc, T, PACK_A_BLOCK_ELEMS) catch null;
+            }
 
-                var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
+            const pack_a_use: []align(memory.CacheLine) T = pack_a_big_opt orelse pack_a_small[0..];
 
             switch (layout) {
                 .col_major => {
-                        gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b[0..]);
+                    const nc_cap: usize = @min(P.NC, n);
+                    const pb_full_panels: usize = (nc_cap + P.NR - 1) / P.NR;
+                    const pb_panels_alloc: usize = @max(PB_PANELS, @max(pb_full_panels, 1));
+                    const PACK_B_ALLOC_ELEMS: usize = PB_STRIDE_ELEMS * pb_panels_alloc;
+
+                    var pack_b_small: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
+                    var pack_b_big_opt: ?[]align(memory.CacheLine) T = null;
+                    var pack_b_big_alloc: ?std.mem.Allocator = null;
+                    defer if (pack_b_big_opt) |buf| {
+                        pack_b_big_alloc.?.free(buf);
+                    };
+
+                    const PACK_B_MAX_BYTES: usize = 8 * 1024 * 1024;
+                    if (c.allocator) |alloc| {
+                        if (PACK_B_ALLOC_ELEMS * @sizeOf(T) <= PACK_B_MAX_BYTES) {
+                            pack_b_big_alloc = alloc;
+                            pack_b_big_opt = memory.allocAligned(alloc, T, PACK_B_ALLOC_ELEMS) catch null;
+                        }
+                    }
+
+                    const pack_b_use: []align(memory.CacheLine) T = pack_b_big_opt orelse pack_b_small[0..];
+                    gemm_mod.gemmBlocked(T, m, n, k, alpha, a, b, beta, c, pack_a_use, pack_b_use);
                     return;
                 },
                 .row_major => {
@@ -1498,7 +1520,28 @@ pub const ops = struct {
                         .allocator = c.allocator,
                     };
 
-                        gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a_use, pack_b[0..]);
+                    const nc_cap: usize = @min(P.NC, m);
+                    const pb_full_panels: usize = (nc_cap + P.NR - 1) / P.NR;
+                    const pb_panels_alloc: usize = @max(PB_PANELS, @max(pb_full_panels, 1));
+                    const PACK_B_ALLOC_ELEMS: usize = PB_STRIDE_ELEMS * pb_panels_alloc;
+
+                    var pack_b_small: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
+                    var pack_b_big_opt: ?[]align(memory.CacheLine) T = null;
+                    var pack_b_big_alloc: ?std.mem.Allocator = null;
+                    defer if (pack_b_big_opt) |buf| {
+                        pack_b_big_alloc.?.free(buf);
+                    };
+
+                    const PACK_B_MAX_BYTES: usize = 8 * 1024 * 1024;
+                    if (c.allocator) |alloc| {
+                        if (PACK_B_ALLOC_ELEMS * @sizeOf(T) <= PACK_B_MAX_BYTES) {
+                            pack_b_big_alloc = alloc;
+                            pack_b_big_opt = memory.allocAligned(alloc, T, PACK_B_ALLOC_ELEMS) catch null;
+                        }
+                    }
+
+                    const pack_b_use: []align(memory.CacheLine) T = pack_b_big_opt orelse pack_b_small[0..];
+                    gemm_mod.gemmBlocked(T, n, m, k, alpha, b_t, a_t, beta, &c_t, pack_a_use, pack_b_use);
                     return;
                 },
             }

@@ -185,16 +185,57 @@ fn gemmParallelBlockedColMajor(
         fn run(self: *Self) void {
             if (self.col1 <= self.col0) return;
 
-            // Per-task pack buffers (stack-local; avoids sharing).
+            const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
+            const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
             const PACK_A_BLOCK_ELEMS: usize = P.MC * P.KC;
+            const PACK_B_STACK_PANELS: usize = (P.NC + P.NR - 1) / P.NR;
+            const PACK_B_STACK_ELEMS: usize = PB_STRIDE_ELEMS * @max(PACK_B_STACK_PANELS, 1);
+
+            // Prefer stack pack buffers for performance (avoid allocator contention in hot paths),
+            // but cap total stack usage per task to a conservative budget.
+            const STACK_MAX_BYTES: usize = 2 * 1024 * 1024;
+            if (comptime (PACK_A_BLOCK_ELEMS * @sizeOf(T) + PACK_B_STACK_ELEMS * @sizeOf(T) <= STACK_MAX_BYTES)) {
+                var pack_a_stack: [PACK_A_BLOCK_ELEMS]T align(memory.CacheLine) = undefined;
+                var pack_b_stack: [PACK_B_STACK_ELEMS]T align(memory.CacheLine) = undefined;
+
+                gemm_mod.gemmBlockedRange(
+                    T,
+                    self.m,
+                    self.n,
+                    self.k,
+                    self.alpha,
+                    self.a,
+                    self.b,
+                    self.beta,
+                    self.c,
+                    pack_a_stack[0..],
+                    pack_b_stack[0..],
+                    self.col0,
+                    self.col1,
+                );
+                return;
+            }
+
+            // Fallback: heap pack buffers.
             var pack_a_small: [P.MR * P.KC]T align(memory.CacheLine) = undefined;
             const pack_a_big = memory.allocAligned(self.allocator, T, PACK_A_BLOCK_ELEMS) catch null;
             defer if (pack_a_big) |buf| self.allocator.free(buf);
             const pack_a_use: []align(memory.CacheLine) T = pack_a_big orelse pack_a_small[0..];
 
-            const PB_STRIDE_ELEMS: usize = comptime gemm_mod.packBPanelStrideElems(T, P);
-            const PB_PANELS: usize = comptime gemm_mod.packBPanelCount(T, P);
-            var pack_b: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
+            const cols_range: usize = self.col1 - self.col0;
+            const nc_cap: usize = @min(P.NC, cols_range);
+            const pb_full_panels: usize = (nc_cap + P.NR - 1) / P.NR;
+            const pb_panels_alloc: usize = @max(PB_PANELS, @max(pb_full_panels, 1));
+            const PACK_B_ALLOC_ELEMS: usize = PB_STRIDE_ELEMS * pb_panels_alloc;
+
+            var pack_b_small: [PB_STRIDE_ELEMS * PB_PANELS]T align(memory.CacheLine) = undefined;
+            const PACK_B_MAX_BYTES: usize = 8 * 1024 * 1024;
+            const pack_b_big = if (PACK_B_ALLOC_ELEMS * @sizeOf(T) <= PACK_B_MAX_BYTES)
+                memory.allocAligned(self.allocator, T, PACK_B_ALLOC_ELEMS) catch null
+            else
+                null;
+            defer if (pack_b_big) |buf| self.allocator.free(buf);
+            const pack_b_use: []align(memory.CacheLine) T = pack_b_big orelse pack_b_small[0..];
 
             gemm_mod.gemmBlockedRange(
                 T,
@@ -207,7 +248,7 @@ fn gemmParallelBlockedColMajor(
                 self.beta,
                 self.c,
                 pack_a_use,
-                pack_b[0..],
+                pack_b_use,
                 self.col0,
                 self.col1,
             );
