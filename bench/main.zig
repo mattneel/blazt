@@ -1,5 +1,6 @@
 const std = @import("std");
 const blazt = @import("blazt");
+const builtin = @import("builtin");
 
 const ComplexF32 = std.math.Complex(f32);
 
@@ -339,6 +340,21 @@ fn benchCacheHotAfterZero(allocator: std.mem.Allocator, out: anytype) !void {
         "bench cache_hot_after_zero (nt_stores={})\n  big_zero: {d} bytes\n  hot: {d} bytes\n  hot_p50: {d} ns\n  hot_after_zero_p50: {d} ns\n  ratio: {d:.3}\n",
         .{ blazt.build_options.nt_stores, big_bytes, hot_bytes, base_p50, after_p50, ratio },
     );
+}
+
+fn cpuCountAvailable() usize {
+    if (builtin.os.tag == .linux) {
+        var set = std.mem.zeroes(std.os.linux.cpu_set_t);
+        const rc = std.os.linux.sched_getaffinity(0, @sizeOf(std.os.linux.cpu_set_t), &set);
+        if (std.os.linux.errno(rc) == .SUCCESS) {
+            var count: usize = 0;
+            for (set) |word_bits| {
+                count += @popCount(word_bits);
+            }
+            if (count > 0) return count;
+        }
+    }
+    return std.Thread.getCpuCount() catch 1;
 }
 
 pub fn main() !void {
@@ -1525,7 +1541,7 @@ pub fn main() !void {
     // Parallel variants (fixed-size pools so we don't include init costs).
     //
     // Scaling story points (hyperthreading span): 8,12,16,24,28,32. Keep 2/4 for baseline.
-    const cpu_threads: usize = std.Thread.getCpuCount() catch 8;
+    const cpu_threads: usize = cpuCountAvailable();
     const max_threads: usize = @min(@as(usize, 32), @max(cpu_threads, 1));
 
     const desired_threads = [_]usize{ 2, 4, 8, 12, 16, 24, 28, 32 };
