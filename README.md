@@ -78,6 +78,119 @@ zig build --build-file build_riscv.zig test -Drelease=true
 # Expected: "Successful stop: Hart 0: write to to-host"
 ```
 
+### Integration Guide
+
+#### C Header
+
+```c
+// blazt.h - C declarations for blazt RISC-V library
+#include <stddef.h>
+
+// BLAS Level 1
+void blazt_saxpy(size_t n, float alpha, const float* x, float* y);
+void blazt_daxpy(size_t n, double alpha, const double* x, double* y);
+float blazt_sdot(size_t n, const float* x, const float* y);
+double blazt_ddot(size_t n, const double* x, const double* y);
+void blazt_sscal(size_t n, float alpha, float* x);
+void blazt_dscal(size_t n, double alpha, double* x);
+float blazt_snrm2(size_t n, const float* x);
+double blazt_dnrm2(size_t n, const double* x);
+
+// BLAS Level 2 (row-major layout)
+void blazt_sgemv(size_t m, size_t n, float alpha, const float* a,
+                 const float* x, float beta, float* y);
+void blazt_dgemv(size_t m, size_t n, double alpha, const double* a,
+                 const double* x, double beta, double* y);
+
+// BLAS Level 3 (row-major layout)
+void blazt_sgemm(size_t m, size_t n, size_t k, float alpha,
+                 const float* a, const float* b, float beta, float* c);
+void blazt_dgemm(size_t m, size_t n, size_t k, double alpha,
+                 const double* a, const double* b, double beta, double* c);
+```
+
+#### Linking
+
+```bash
+# Compile your Tensix kernel code
+riscv32-unknown-elf-gcc -march=rv32imfd -mabi=ilp32d -c kernel.c -o kernel.o
+
+# Link with blazt
+riscv32-unknown-elf-gcc -march=rv32imfd -mabi=ilp32d \
+    kernel.o -L/path/to/blazt/freestanding/zig-out/lib -lblazt_riscv \
+    -o kernel.elf
+```
+
+#### Example: Tensix Kernel
+
+```c
+// kernel.c - Example BLAS usage on Tensix
+#include "blazt.h"
+
+// Scratchpad memory (Tensix L1)
+static float A[64*64] __attribute__((aligned(64)));
+static float B[64*64] __attribute__((aligned(64)));
+static float C[64*64] __attribute__((aligned(64)));
+
+void matrix_multiply_64x64(void) {
+    // C = A * B (64x64 SGEMM)
+    blazt_sgemm(64, 64, 64, 1.0f, A, B, 0.0f, C);
+}
+
+void vector_dot_product(float* x, float* y, size_t n, float* result) {
+    *result = blazt_sdot(n, x, y);
+}
+```
+
+#### Memory Requirements
+
+| Requirement | Value | Notes |
+|-------------|-------|-------|
+| Stack | ~4KB | Per-thread, for function calls |
+| Alignment | 64 bytes | Matrix data should be cache-line aligned |
+| FPU | Required | Set `mstatus.FS = 01` before floating-point ops |
+
+#### Calling from Assembly
+
+```asm
+# SAXPY: y = 2.0*x + y, n=4
+    li      a0, 4                  # n = 4
+    lui     a1, 0x40000            # alpha = 2.0f (IEEE 754)
+    la      a2, x_data             # x pointer
+    la      a3, y_data             # y pointer
+    call    blazt_saxpy
+```
+
+#### Tenstorrent Firmware Integration
+
+For integration with Tenstorrent's firmware/runtime:
+
+1. **Memory mapping**: Place library in Tensix L1 scratchpad or use NOC for L2 access
+2. **Initialization**: Set `mstatus.FS` bits before first FP operation
+3. **Multi-core**: Each Tensix core runs independently—coordinate via NOC mailboxes
+4. **Data movement**: Use NOC primitives to stage data before BLAS calls
+
+```c
+// Pseudocode for Tensix integration
+void run_on_tensix_core(uint32_t core_id) {
+    // 1. Enable FPU
+    uint32_t mstatus;
+    asm volatile("csrr %0, mstatus" : "=r"(mstatus));
+    mstatus |= 0x2000;  // FS = Initial
+    asm volatile("csrw mstatus, %0" :: "r"(mstatus));
+
+    // 2. Load data via NOC (Tenstorrent-specific)
+    noc_read(remote_addr, local_A, sizeof(A));
+    noc_read(remote_addr + offset, local_B, sizeof(B));
+
+    // 3. Compute
+    blazt_sgemm(M, N, K, 1.0f, local_A, local_B, 0.0f, local_C);
+
+    // 4. Write back
+    noc_write(local_C, result_addr, sizeof(C));
+}
+```
+
 ### Status
 
 - Compiles successfully to `elf32-littleriscv`
