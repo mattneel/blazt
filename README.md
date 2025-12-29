@@ -7,9 +7,75 @@
 
 Development notes:
 - Zig 0.16 API/syntax gotchas encountered in this repo: [`docs/zig-gotchas.md`](docs/zig-gotchas.md)
-- Optimized Zig “northern star”: [`docs/kangarootwelve.zig`](docs/kangarootwelve.zig) — one of the most beautiful examples of optimized Zig we’ve ever seen; we should aspire to implement and refactor our ops/kernels/etc using the same idioms.
+- Optimized Zig "northern star": [`docs/kangarootwelve.zig`](docs/kangarootwelve.zig) — one of the most beautiful examples of optimized Zig we've ever seen; we should aspire to implement and refactor our ops/kernels/etc using the same idioms.
 - Building with **native CPU features** (AVX2/AVX512/FMA, etc): `zig build test -Dcpu=native` (you can also pass a specific model like `-Dcpu=znver2`, and add/subtract features with `+feat/-feat` syntax).
 - Inspecting build-time CPU cache constants: `zig build cpu-cache` then open `zig-out/cpu_cache.zig`.
+
+## Tenstorrent / Tensix Backend (Experimental)
+
+Blazt can be compiled to `riscv32-freestanding` for Tenstorrent's Tensix cores. This bypasses ttnn/Metal entirely — pure RISC-V kernels that run directly on silicon.
+
+### Building for Tensix
+
+```bash
+cd freestanding
+zig build --build-file build_riscv.zig -Drelease=true
+```
+
+Output: `zig-out/lib/libblazt_riscv.a` (~141KB optimized)
+
+### Exported Functions (C ABI)
+
+| Function | Description |
+|----------|-------------|
+| `blazt_saxpy` | y = alpha*x + y (f32) |
+| `blazt_daxpy` | y = alpha*x + y (f64) |
+| `blazt_sdot` | Dot product (f32) |
+| `blazt_ddot` | Dot product (f64) |
+| `blazt_sscal` | x = alpha*x (f32) |
+| `blazt_dscal` | x = alpha*x (f64) |
+| `blazt_snrm2` | Euclidean norm (f32) |
+| `blazt_dnrm2` | Euclidean norm (f64) |
+| `blazt_sgemm` | Matrix multiply (f32) |
+| `blazt_dgemm` | Matrix multiply (f64) |
+| `blazt_sgemv` | Matrix-vector multiply (f32) |
+| `blazt_dgemv` | Matrix-vector multiply (f64) |
+
+### Verifying RISC-V Output
+
+```bash
+llvm-objdump -d zig-out/lib/libblazt_riscv.a | head -50
+# Should show: addi, sw, lw, fsw, flw, fadd.s, fmul.s, fmadd.s, etc.
+
+llvm-nm zig-out/lib/libblazt_riscv.a | grep "T blazt"
+# Should show all 12 exported symbols
+```
+
+### Architecture
+
+```
+Standard ttnn:           Blazt/Tensix:
+Python → ttnn → C++      Zig → LLVM → RISC-V
+    → Metal → NOC            ↓
+        → Tensix          Tensix cores
+(83% dispatch overhead)  (zero dispatch)
+```
+
+### Status
+
+- Compiles successfully to `elf32-littleriscv`
+- Contains proper RISC-V F extension instructions (`fadd.s`, `fmul.s`, `fmadd.s`)
+- Exports BLAS Level 1/2/3 functions with C ABI
+- **Not yet tested on actual Tensix hardware** (requires devkit access)
+
+### Cache Tuning
+
+The freestanding build uses conservative defaults in `freestanding/cpu_cache.zig`. Once running on hardware, tune these for Tensix scratchpad:
+
+```zig
+pub const l1d_size_bytes: usize = 16 * 1024;  // Adjust for Tensix SRAM
+pub const l2_size_bytes: usize = 64 * 1024;   // Virtual L2 for tiling
+```
 
 ## Examples
 
