@@ -51,4 +51,24 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(lib);
+
+    // Test executable for Whisper ISS
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("test_whisper.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "blazt", .module = blazt },
+        },
+    });
+
+    const test_exe = b.addExecutable(.{
+        .name = "test_whisper",
+        .root_module = test_module,
+    });
+
+    // Install the test executable
+    const install_test = b.addInstallArtifact(test_exe, .{});
+    const test_step = b.step("test", "Build test executable for Whisper ISS");
+    test_step.dependOn(&install_test.step);
 }

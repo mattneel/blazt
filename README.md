@@ -61,12 +61,30 @@ Python → ttnn → C++      Zig → LLVM → RISC-V
 (83% dispatch overhead)  (zero dispatch)
 ```
 
+### Testing with Whisper ISS
+
+Tenstorrent's open-source RISC-V ISS can verify the compiled code without hardware:
+
+```bash
+# Clone and build Whisper
+git clone https://github.com/tenstorrent/whisper
+cd whisper
+make BOOST_INC= BOOST_LIB_DIR=/usr/lib64 STATIC_LINK=0
+
+# Build and run blazt tests
+cd /path/to/blazt/freestanding
+zig build --build-file build_riscv.zig test -Drelease=true
+../whisper/build-Linux/whisper --isa rv32imfdc --tohost 0x80001000 zig-out/bin/test_whisper
+# Expected: "Successful stop: Hart 0: write to to-host"
+```
+
 ### Status
 
 - Compiles successfully to `elf32-littleriscv`
 - Contains proper RISC-V F extension instructions (`fadd.s`, `fmul.s`, `fmadd.s`)
 - Exports BLAS Level 1/2/3 functions with C ABI
-- **Not yet tested on actual Tensix hardware** (requires devkit access)
+- **Verified on Whisper ISS** - SAXPY, SDOT, SSCAL, SNRM2 pass
+- Ready for testing on actual Tensix hardware (requires devkit access)
 
 ### Cache Tuning
 
