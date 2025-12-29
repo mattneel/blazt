@@ -15,6 +15,8 @@ Development notes:
 
 Blazt can be compiled to `riscv32-freestanding` for Tenstorrent's Tensix cores. This bypasses ttnn/Metal entirely — pure RISC-V kernels that run directly on silicon.
 
+![Demo](docs/blazt_tensix_demo.gif)
+
 ### Building for Tensix
 
 ```bash
